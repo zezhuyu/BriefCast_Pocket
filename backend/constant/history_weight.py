@@ -29,6 +29,8 @@ def get_weight(actions):
 
 
 def get_embeding_mean(embedding, number):
+    if number == 0:
+        return embedding
     return embedding / number
 
 def normalize_embedding(embedding):

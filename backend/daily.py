@@ -22,7 +22,6 @@ async def store_daily_news(user_id, location=None, limit=5, force=False, summary
         history = get_history(user_id, include_hidden=True)
         history_ids = [h['id'] for h in history]
         prev_day_vector = user.get("prev_day_vector")
-        print(prev_day_vector, flush=True)
         if prev_day_vector is None:
             return None
         pids = search_podcast_by_dense(prev_day_vector, limit=limit*10, history=history_ids, time_range=time.time() - 60 * 60 * 30)
