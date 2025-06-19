@@ -10,7 +10,7 @@ from tinydb import TinyDB, Query
 from nanoid import generate
 from langdetect import detect
 
-current_file_dir = os.getcwd()
+current_file_dir = os.path.join(os.path.expanduser("~"), "BriefCast_data")
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from db.db import create_podcast
@@ -18,7 +18,7 @@ from cuda_stuff import embedding_model
 from db.cache import store
 
 
-db = TinyDB(os.path.join(current_file_dir, "db/dbs", "rss.json"))
+db = TinyDB(os.path.join(current_file_dir, "dbs", "rss.json"))
 links = db.table('links')
 
 def get_rss_links():

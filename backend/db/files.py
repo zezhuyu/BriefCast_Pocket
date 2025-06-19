@@ -7,7 +7,7 @@ from nanoid import generate
 from cuda_stuff import compress_audio
 import sys
 
-current_file_dir = os.path.join(os.getcwd(), "db")
+current_file_dir = os.path.join(os.path.expanduser("~"), "BriefCast_data")
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BASE_DIR = os.path.join(current_file_dir, "data")
 

@@ -10,7 +10,7 @@ load_dotenv()
 
 DIMENSION = int(os.getenv('VECTOR_DIM', 1024))
 
-current_file_dir = os.path.join(os.getcwd(), "db")
+current_file_dir = os.path.join(os.path.expanduser("~"), "BriefCast_data")
 static_dir = os.path.dirname(os.path.abspath(__file__))
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

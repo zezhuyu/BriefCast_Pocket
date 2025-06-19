@@ -38,7 +38,6 @@ fn get_bundled_resource_path(file: &str) -> PathBuf {
 
 fn wait_for_backend(port: u16, attempts: u32, attempt_timeout_secs: u64) -> bool {
     for i in 1..=attempts {
-        println!("🔄 Waiting for backend attempt {}/{}...", i, attempts);
         let start = std::time::Instant::now();
         while start.elapsed().as_secs() < attempt_timeout_secs {
             if TcpStream::connect(("127.0.0.1", port)).is_ok() {
@@ -47,7 +46,6 @@ fn wait_for_backend(port: u16, attempts: u32, attempt_timeout_secs: u64) -> bool
             }
             thread::sleep(Duration::from_millis(200));
         }
-        println!("⚠️ Attempt {} timed out after {}s", i, attempt_timeout_secs);
     }
     println!("❌ Backend failed to respond after {} attempts.", attempts);
     false

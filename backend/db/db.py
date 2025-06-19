@@ -16,7 +16,7 @@ import sys
 import threading
 import os
 
-current_file_dir = os.path.join(os.getcwd(), "db")
+current_file_dir = os.path.join(os.path.expanduser("~"), "BriefCast_data")
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db.init
 from db.files import store_content, store_image, store_audio, store_transcript, get_file, delete_file, store_script
