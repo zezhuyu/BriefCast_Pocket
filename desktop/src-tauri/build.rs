@@ -1,10 +1,8 @@
-use std::env;
 use std::fs;
 use std::path::{Path};
 
 fn main() {
-    let target = env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".into());
-    let out_dir = Path::new(&target).join("release/bundle/resources");
+    let out_dir = Path::new("./");
     let api_path = Path::new("../../backend/dist/api");
 
     if api_path.exists() && api_path.is_file() {

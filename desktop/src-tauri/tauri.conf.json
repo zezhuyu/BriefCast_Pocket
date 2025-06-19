@@ -51,6 +51,7 @@
     "targets": "all",
     "icon": [
       "icons/192x192@2x.png"
-    ]
+    ],
+    "resources": ["api"]
   }
 }
