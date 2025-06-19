@@ -6,7 +6,8 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "export": "dotenv -e .env.export -- next build"
   },
   "dependencies": {
     "@heroicons/react": "^2.2.0",

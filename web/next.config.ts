@@ -7,8 +7,9 @@ const nextConfig: NextConfig = {
   // typescript: {
   //   ignoreBuildErrors: true,
   // },
-  output: 'export',
-  trailingSlash: true,
+
+  output: process.env.EXPORT_MODE === 'true' ? 'export' : 'standalone',
+  trailingSlash: process.env.EXPORT_MODE === 'true' ? true : false,
   images: {
     domains: ['your-backend.com'],
     loader: 'custom',
