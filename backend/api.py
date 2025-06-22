@@ -4,10 +4,30 @@ import sys
 import os
 import secrets
 import string
+import spacy
+import en_core_web_sm
+import importlib.util
+
+def patched_spacy_load(name, **kwargs):
+    if name == "en_core_web_sm":
+        return en_core_web_sm.load(**kwargs)
+    return original_spacy_load(name, **kwargs)
+
+def patched_is_package(name):
+    if name == "en_core_web_sm":
+        return True
+    return original_is_package(name)
 
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.set_start_method("fork")
+
+    original_spacy_load = spacy.load
+    spacy.load = patched_spacy_load
+
+    original_is_package = spacy.util.is_package
+    spacy.util.is_package = patched_is_package
+
 
 from datetime import datetime, timedelta
 import os, numpy as np
