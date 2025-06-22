@@ -47,7 +47,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from podcast import store_transition_audio, create_news_summary_podcast, generate_id, create_news_summary_podcast, create_podcast
 from db.db import get_podcast, get_podcast_embedding, get_user_preference_vector, get_hot_podcasts, get_trending_podcasts, get_podcasts, search_podcast_by_dense, search_podcast_hybrid, get_history, update_user_listen_position, init_connections, update_user_location, get_user_podcast_rate, create_user
-from db.db import create_playlist, rename_playlist, delete_playlist, add_to_playlist, delete_from_playlist, get_playlist_items, get_user_playlists, get_user, get_user_tokens, add_token, revoke_token
+from db.db import create_playlist, rename_playlist, delete_playlist, add_to_playlist, delete_from_playlist, get_playlist_items, get_user_playlists, get_user, get_user_tokens, add_token, revoke_token, get_password_hash, store_password_hash
 from db.files import *
 from db.cache import store
 from daily import generate_daily_podcast
@@ -84,10 +84,10 @@ def generate_secure_password(length=16):
     return ''.join(password)
 
 def get_secret_key():
-    secret_key = os.getenv("SECRET_KEY")
+    secret_key = get_password_hash("admin")
     if not secret_key:
         secret_key = generate_secure_password()
-        set_key(os.path.join(os.path.dirname(__file__), '.env'), "SECRET_KEY", secret_key)
+        store_password_hash(secret_key)
     return secret_key
 
 SECRET_KEY = get_secret_key()

@@ -64,6 +64,25 @@ def init_connections():
 
 init_connections()
 
+def get_password_hash(password):
+    with _user_lock:
+        find = user_db.table('passwords').get(Query().username == 'admin')
+        if find:
+            return find["password_hash"]
+        else:
+            return None
+
+def store_password_hash(password_hash):
+    try:
+        with _user_lock:
+            if user_db.table('passwords').get(Query().username == 'admin'):
+                user_db.table('passwords').truncate()
+        user_db.table('passwords').insert({"username": "admin", "password_hash": password_hash})
+        return True
+    except Exception as e:
+        print(e)
+        return False
+
 def get_timestamp_from_date(date):
     try:
         dt = datetime.strptime(date, "%Y-%m-%d %H:%M:%S.%f")
