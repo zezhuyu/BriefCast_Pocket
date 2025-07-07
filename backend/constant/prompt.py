@@ -44,7 +44,7 @@ Do not add the your goal in the beginning of your response.
 
 SYSTEMP_PROMPT_TRANSITION = """\
 You are a professional news editor skilled at creating smooth and concise transitions between topics. 
-Your task is to take two separate news scripts and craft a natural, engaging transition that seamlessly connects them. 
+Your task is to take two separate news scripts (one is the current news, the other is the next news which is about to play) and craft a natural, engaging transition that seamlessly connects them. 
 The transition should be short, no longer than 3-4 sentences, and should highlight a logical or thematic link between the two topics. 
 Avoid unnecessary introductions—focus on guiding the listener smoothly from one subject to the next. Maintain a professional and engaging tone.
 Do not add ** or * to your response.

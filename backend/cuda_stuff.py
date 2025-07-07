@@ -29,10 +29,10 @@ load_dotenv()
 
 warnings.filterwarnings('ignore')
 
-LOCAL_AUDIO = os.getenv('LOCAL_AUDIO', "False") == "True"
-openai.api_key = os.getenv('OPENAI_API_KEY')
-openai.base_url = os.getenv('OPENAI_API_URL', "https://api.openai.com/v1/")
-TEXT_MODEL = os.getenv('TEXT_MODEL', "gpt-4.1-nano")
+LOCAL_AUDIO = os.getenv('LOCAL_AUDIO', "True") == "True"
+openai.api_key = os.getenv('OPENAI_API_KEY', 'ollama')
+openai.base_url = os.getenv('OPENAI_API_URL', "http://localhost:11434/v1/")
+TEXT_MODEL = os.getenv('TEXT_MODEL', "gemma3n")
 
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', "BAAI/bge-m3")
 

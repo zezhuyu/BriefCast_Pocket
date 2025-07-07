@@ -296,6 +296,7 @@ def update_prevday_embedding(user_id):
                 daily_mean = daily_mean.tolist()
             if isinstance(zero_weight, np.ndarray):
                 zero_weight = zero_weight.tolist()  
+            print("contains nan: ", np.isnan(daily_mean).any())
             user_db.update({"prev_day_vector": daily_mean, "daily_vector": zero_weight, "daily_total_weight": 0.0, "daily_listen_count": 0, "last_daily_vector_update": time.time()}, Query().id == user_id)
             return True
     except Exception as e:
@@ -635,6 +636,8 @@ def get_user_podcast(user_id):
             """
             cursor.execute(query, (user_id,))
             podcast = cursor.fetchone()
+            if podcast is None:
+                return None
             res = {
                 "id": podcast[0],
                 "title": podcast[1],
@@ -664,6 +667,8 @@ def get_summary_podcast(user_id):
             """
             cursor.execute(query, (f"SUMMARY-{user_id}",))
             podcast = cursor.fetchone()
+            if podcast is None:
+                return None
             res = {
                 "id": podcast[0],
                 "title": podcast[1],
@@ -688,6 +693,8 @@ def get_podcast_by_link(link):
             cursor = sqlite_client.cursor()
             cursor.execute("SELECT id FROM podcasts WHERE link = ?", (link,))
             podcast = cursor.fetchone()
+            if podcast is None:
+                return None
             return podcast[0]
         except Exception as e:
             print(e)

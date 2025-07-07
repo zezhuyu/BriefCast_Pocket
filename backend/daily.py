@@ -9,6 +9,9 @@ import asyncio
 import threading
 from db.cache import store
 
+import traceback
+import sys
+
 
 async def store_daily_news(user_id, location=None, limit=5, force=False, summary=False):
     if store.sismember("daily_news", user_id):
@@ -59,7 +62,7 @@ async def store_daily_news(user_id, location=None, limit=5, force=False, summary
         store.srem("daily_news", user_id)
         return id
     except Exception as e:
-        print(e)
+        print("daily news error: ", e)
         store.srem("daily_news", "user_id")
         return None
     

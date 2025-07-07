@@ -72,7 +72,7 @@ async def create_daily_summary(pids):
         gc.collect()
         return audio, new_lyric, duration
     except Exception as e:
-        print(e)
+        print("daily summary error: ", e)
         store.srem("daily_summary", "".join(pids))
         gc.collect()
         return None, None, None
@@ -134,7 +134,7 @@ async def create_transcript(pid):
             script = rewrite_podcast(content)
             if script:
                 break
-        except Exception:
+        except Exception as e:
             pass
     store_podcast_script(pid, script)
     return script
@@ -171,7 +171,7 @@ async def create_podcast(pid):
         gc.collect()
         return audio, new_lyric, duration
     except Exception as e:
-        print(e)
+        print("podcast error: ", e)
         store.srem("podcast", pid)
         gc.collect()
         return None, None, None
@@ -379,8 +379,8 @@ def create_opening(location=None):
     opening_lyric = get_file("transcript/opening.lrc").getvalue().decode("utf-8").splitlines()
     opening_audio = get_file("audio/opening.wav")
 
-    if location and location != [None, None] and location != [0, 0]:
-        Latitude, Longitude = location
+    if location and (location != [None, None] and location != [0, 0] or len(location.split(',')) == 2):
+        Latitude, Longitude = map(float, location.split(','))
         obj = TimezoneFinder()
         timezone = obj.certain_timezone_at(lng=Longitude, lat=Latitude)
         timezone = ZoneInfo(timezone)
@@ -497,7 +497,7 @@ async def create_transition_audio(id1, id2):
         gc.collect()
         return audio, new_lyric, duration
     except Exception as e:
-        print(e)
+        print("transition audio error: ", e)
         store.srem("transition_audio", f"{id1}{id2}")
         gc.collect()
         return None, None, None
