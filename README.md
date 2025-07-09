@@ -5,6 +5,7 @@
 </div>
 
 ## Overview
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/zezhuyu/BriefCast_Pocket)
 
 Briefcast is a cutting-edge lightweight **personalized AI-generated podcast platform** that transforms how you consume audio content. Using advanced AI technologies, Briefcast creates custom podcast episodes tailored to your interests, schedule, and preferences. Whether you're commuting, exercising, or relaxing, get personalized audio content that matters to you.
 
