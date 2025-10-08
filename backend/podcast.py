@@ -18,6 +18,7 @@ import asyncio
 from db.cache import store
 from cuda_stuff import embedding_model
 import gc
+from tqdm import tqdm
 
 async def create_summary_script(pids):
     contents = []
@@ -567,7 +568,7 @@ async def generate_daily_news(pids, location=None, silence_secs=1, summary=False
     else:
         id1 = None
         id2 = None
-        for pid in pids:
+        for pid in tqdm(pids):
             audio, lyric, add_seconds = await create_podcast(pid)
             if audio is None:
                 continue

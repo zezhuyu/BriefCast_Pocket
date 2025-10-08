@@ -21,14 +21,17 @@ async def store_daily_news(user_id, location=None, limit=5, force=False, summary
     try:
         user = get_user(user_id)
         if user is None:
+            store.srem("daily_news", user_id)
             return None
         history = get_history(user_id, include_hidden=True)
         history_ids = [h['id'] for h in history]
         prev_day_vector = user.get("prev_day_vector")
         if prev_day_vector is None:
+            store.srem("daily_news", user_id)
             return None
         pids = search_podcast_by_dense(prev_day_vector, limit=limit*10, history=history_ids, time_range=time.time() - 60 * 60 * 30)
         if len(pids) == 0:
+            store.srem("daily_news", user_id)
             return None
         podcasts = get_podcasts(pids)
         pids = await news_crawler(podcasts, find=limit)
@@ -63,7 +66,7 @@ async def store_daily_news(user_id, location=None, limit=5, force=False, summary
         return id
     except Exception as e:
         print("daily news error: ", e)
-        store.srem("daily_news", "user_id")
+        store.srem("daily_news", user_id)
         return None
     
     

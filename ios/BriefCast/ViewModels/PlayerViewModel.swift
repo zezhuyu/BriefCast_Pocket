@@ -9,6 +9,7 @@ import Foundation
 import AVFoundation
 import Combine
 import MediaPlayer
+import UIKit
 
 class PlayerViewModel: ObservableObject {
     @Published var currentPodcast: Podcast?
@@ -23,6 +24,9 @@ class PlayerViewModel: ObservableObject {
     @Published var currentTranscriptUrl: String = ""
     @Published var currentTitle: String = ""
     @Published var currentHost: String = ""
+    
+    // Image caching for lock screen artwork
+    private var imageCache: [String: UIImage] = [:]
     
     // New properties for enhanced functionality
     @Published var currentQueue: [PodcastCard] = []
@@ -144,21 +148,77 @@ class PlayerViewModel: ObservableObject {
         nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
         
         // Load artwork if available
-        // if let url = URL(string: podcast.imageUrl) {
-        //     // check if the image is already load
-            
-        //     URLSession.shared.dataTask(with: url) { data, _, _ in
-        //         if let data = data, let image = UIImage(data: data) {
-        //             let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-        //             nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
-        //             DispatchQueue.main.async {
-        //                 MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-        //             }
-        //         }
-        //     }.resume()
-        // }
+        loadArtworkForNowPlaying { [weak self] image in
+            DispatchQueue.main.async {
+                if let image = image {
+                    let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
+                }
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+            }
+        }
+    }
+    
+    // MARK: - Artwork Loading
+    private func loadArtworkForNowPlaying(completion: @escaping (UIImage?) -> Void) {
+        guard !currentImageUrl.isEmpty else {
+            completion(nil)
+            return
+        }
         
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+        // Check cache first
+        if let cachedImage = imageCache[currentImageUrl] {
+            completion(cachedImage)
+            return
+        }
+        
+        // Load image from URL
+        guard let url = URL(string: currentImageUrl) else {
+            completion(nil)
+            return
+        }
+        
+        URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+            guard let data = data, 
+                  error == nil, 
+                  let image = UIImage(data: data) else {
+                completion(nil)
+                return
+            }
+            
+            // Cache the image
+            DispatchQueue.main.async {
+                self?.imageCache[self?.currentImageUrl ?? ""] = image
+            }
+            
+            completion(image)
+        }.resume()
+    }
+    
+    // MARK: - Cache Management
+    private func clearImageCache() {
+        imageCache.removeAll()
+    }
+    
+    private func clearImageCache(for url: String) {
+        imageCache.removeValue(forKey: url)
+    }
+    
+    // MARK: - Artwork Preloading
+    private func preloadArtwork(for imageUrl: String) {
+        guard !imageUrl.isEmpty,
+              imageCache[imageUrl] == nil,
+              let url = URL(string: imageUrl) else { return }
+        
+        URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+            guard let data = data,
+                  error == nil,
+                  let image = UIImage(data: data) else { return }
+            
+            DispatchQueue.main.async {
+                self?.imageCache[imageUrl] = image
+            }
+        }.resume()
     }
     
     // MARK: - Podcast Loading
@@ -310,6 +370,9 @@ class PlayerViewModel: ObservableObject {
             return
         }
         
+        // Clean up previous player state
+        cleanupCurrentPlayer()
+        
         // Set UI properties for podcast
         currentImageUrl = podcast.imageUrl
         currentTranscriptUrl = podcast.transcriptUrl
@@ -317,6 +380,9 @@ class PlayerViewModel: ObservableObject {
         currentHost = "BriefCast" // or use podcast.host if available
         duration = podcast.durationSeconds
         currentTime = 0
+        
+        // Preload artwork for current podcast
+        preloadArtwork(for: podcast.imageUrl)
         
         guard let url = URL(string: podcast.audioUrl) else {
             errorMessage = "Invalid audio URL"
@@ -378,7 +444,31 @@ class PlayerViewModel: ObservableObject {
         }
     }
     
+    // MARK: - Player Cleanup
+    private func cleanupCurrentPlayer() {
+        // Remove time observer
+        if let observer = timeObserver {
+            player?.removeTimeObserver(observer)
+            timeObserver = nil
+        }
+        
+        // Stop position logging
+        stopPositionLogging()
+        
+        // Pause current player
+        player?.pause()
+        
+        // Clear player reference
+        player = nil
+    }
+    
     private func setupTimeObserver() {
+        // Remove existing time observer before adding a new one
+        if let observer = timeObserver {
+            player?.removeTimeObserver(observer)
+            timeObserver = nil
+        }
+        
         let interval = CMTime(seconds: 0.5, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         timeObserver = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
             self?.currentTime = CMTimeGetSeconds(time)
@@ -992,6 +1082,8 @@ class PlayerViewModel: ObservableObject {
                 },
                 receiveValue: { [weak self] podcast in
                     self?.nextPodcast = podcast
+                    // Preload artwork for the next podcast
+                    self?.preloadArtwork(for: podcast.imageUrl)
                     // Start preparing transition audio
                     self?.prepareTransitionAudio()
                 }
@@ -1053,6 +1145,9 @@ class PlayerViewModel: ObservableObject {
               let url = URL(string: transition.audioUrl) else { return }
         
         isPlayingTransition = true
+        
+        // Clean up previous player state
+        cleanupCurrentPlayer()
         
         // Set UI properties for transition audio
         currentImageUrl = transition.imageUrl

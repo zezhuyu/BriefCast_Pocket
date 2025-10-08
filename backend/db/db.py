@@ -260,20 +260,41 @@ def update_realtime_embedding(user_id):
             batched_vector = np.array(batched_vector)
             batch_total_weight = user["batch_total_weight"]
             batch_count = user["batch_count"]
+            
+            # Validate input vectors for NaN values
+            if np.isnan(prev_vector).any():
+                print(f"Warning: prev_vector contains NaN for user {user_id}, resetting to zeros")
+                prev_vector = np.zeros(DIMENSION)
+            if np.isnan(batched_vector).any():
+                print(f"Warning: batched_vector contains NaN for user {user_id}, resetting to zeros")
+                batched_vector = np.zeros(DIMENSION)
+            
             realtime_vector = np.zeros(DIMENSION)
             zero_weight = np.zeros(DIMENSION)
-            if batch_total_weight is not None and batched_vector is not None:
+            
+            # Calculate realtime vector with weight validation
+            if batch_total_weight is not None and batched_vector is not None and batch_total_weight > 0:
                 realtime_vector = get_embeding_mean(batched_vector, batch_total_weight)
+            
+            # Combine with previous vector
             if prev_vector is not None:
                 realtime_vector = compute_batch_embedding(prev_vector, realtime_vector)
+            
+            # Final NaN check before storing
+            if np.isnan(realtime_vector).any():
+                print(f"Warning: realtime_vector contains NaN for user {user_id}, resetting to zeros")
+                realtime_vector = np.zeros(DIMENSION)
+            
+            # Convert to lists for storage
             if isinstance(realtime_vector, np.ndarray):
                 realtime_vector = realtime_vector.tolist()
             if isinstance(zero_weight, np.ndarray):
                 zero_weight = zero_weight.tolist()
+            
             user_db.update({"realtime_vector": realtime_vector, "batched_vector": zero_weight, "batch_total_weight": 0.0, "batch_count": 0}, Query().id == user_id)
         return True
     except Exception as e:
-        print(e)
+        print(f"Error in update_realtime_embedding for user {user_id}: {e}")
         return False
 
 def update_prevday_embedding(user_id):
@@ -286,21 +307,42 @@ def update_prevday_embedding(user_id):
             daily_vector = np.array(daily_vector)
             daily_total_weight = user["daily_total_weight"]
             daily_listen_count = user["daily_listen_count"]
+            
+            # Validate input vectors for NaN values
+            if np.isnan(prev_day_vector).any():
+                print(f"Warning: prev_day_vector contains NaN for user {user_id}, resetting to zeros")
+                prev_day_vector = np.zeros(DIMENSION)
+            if np.isnan(daily_vector).any():
+                print(f"Warning: daily_vector contains NaN for user {user_id}, resetting to zeros")
+                daily_vector = np.zeros(DIMENSION)
+            
             zero_weight = np.zeros(DIMENSION)
             daily_mean = np.zeros(DIMENSION)
-            if daily_total_weight is not None and daily_vector is not None:
+            
+            # Calculate daily mean with weight validation
+            if daily_total_weight is not None and daily_vector is not None and daily_total_weight > 0:
                 daily_mean = get_embeding_mean(daily_vector, daily_total_weight)
+            
+            # Combine with previous day vector
             if prev_day_vector is not None:
                 daily_mean = compute_daily_embedding(prev_day_vector, daily_mean)
+            
+            # Final NaN check before storing
+            if np.isnan(daily_mean).any():
+                print(f"Warning: daily_mean contains NaN for user {user_id}, resetting to zeros")
+                daily_mean = np.zeros(DIMENSION)
+            
+            # Convert to lists for storage
             if isinstance(daily_mean, np.ndarray):
                 daily_mean = daily_mean.tolist()
             if isinstance(zero_weight, np.ndarray):
                 zero_weight = zero_weight.tolist()  
+            
             print("contains nan: ", np.isnan(daily_mean).any())
             user_db.update({"prev_day_vector": daily_mean, "daily_vector": zero_weight, "daily_total_weight": 0.0, "daily_listen_count": 0, "last_daily_vector_update": time.time()}, Query().id == user_id)
             return True
     except Exception as e:
-        print(e)
+        print(f"Error in update_prevday_embedding for user {user_id}: {e}")
         return False
 
 def create_playlist(user_id, name, description=""):

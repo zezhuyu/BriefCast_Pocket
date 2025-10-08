@@ -31,16 +31,35 @@ def get_weight(actions):
 def get_embeding_mean(embedding, number):
     if number == 0:
         return embedding
-    return embedding / number
+    result = embedding / number
+    # Check for NaN values and replace with zeros if found
+    if np.isnan(result).any():
+        return np.zeros_like(embedding)
+    return result
 
 def normalize_embedding(embedding):
-    return embedding / np.linalg.norm(embedding)
+    norm = np.linalg.norm(embedding)
+    if norm == 0 or np.isnan(norm):
+        return np.zeros_like(embedding)
+    result = embedding / norm
+    # Check for NaN values and replace with zeros if found
+    if np.isnan(result).any():
+        return np.zeros_like(embedding)
+    return result
 
 def compute_daily_embedding(privous, current):
-    return privous * 0.8 + current * 0.2
+    result = privous * 0.8 + current * 0.2
+    # Check for NaN values and replace with zeros if found
+    if np.isnan(result).any():
+        return np.zeros_like(privous)
+    return result
 
 def compute_batch_embedding(privous, current):
-    return privous * 0.9 + current * 0.1
+    result = privous * 0.9 + current * 0.1
+    # Check for NaN values and replace with zeros if found
+    if np.isnan(result).any():
+        return np.zeros_like(privous)
+    return result
 
 def listen_weight(percentage):
     if percentage < 0.05:
