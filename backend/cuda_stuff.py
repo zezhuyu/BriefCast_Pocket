@@ -123,7 +123,7 @@ def create_audio_openai(audio_text, voice="alloy", split_pattern=r"\s*,\s*"):
 
     return audio_buffer, lyric
 
-def create_audio_kokoro(audio_text, voice='bm_george', split_pattern=r'\s*,\s*'):
+def create_audio_kokoro(audio_text, voice='am_michael', split_pattern=r'\s*,\s*'):
     clear_cache()
     audio_pipeline = KPipeline(repo_id=AUDIO_MODEL, lang_code='a', device=DEVICE)
     # sentences = split_nltk(audio_text)

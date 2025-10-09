@@ -46,9 +46,7 @@ def create_transition(script1, script2):
 
     messages = [
         {"role": "system", "content": SYSTEMP_PROMPT_TRANSITION},
-        {"role": "user", "content": script1},
-        {"role": "user", "content": script2},
-        {"role": "assistant", "content": "Please create a smooth transition between the two news scripts provided."},  # Model's role
+        {"role": "user", "content": f"Create a transition between these two news stories:\n\nSTORY 1:\n{script1}\n\nSTORY 2:\n{script2}"}
     ]
 
     return chat_text(messages)

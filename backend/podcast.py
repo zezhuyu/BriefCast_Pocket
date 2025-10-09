@@ -64,7 +64,7 @@ async def create_daily_summary(pids):
         for text in sentences:
             if text:
                 audio_text += text + ", "
-        audio, lyric = create_audio(audio_text, voice='bm_george')
+        audio, lyric = create_audio(audio_text, voice='am_michael')
         for line in lyric:
             new_lyric.append(modify_timestamp(line, 0))
         duration = get_audio_duration(audio)
@@ -161,7 +161,7 @@ async def create_podcast(pid):
         for text in sentences:
             if text:
                 audio_text += text + ", "
-        audio, lyric = create_audio(audio_text, voice='bm_george')
+        audio, lyric = create_audio(audio_text, voice='am_michael')
         for line in lyric:
             new_lyric.append(modify_timestamp(line, 0))
         duration = get_audio_duration(audio)
