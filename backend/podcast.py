@@ -125,11 +125,16 @@ async def create_transcript(pid):
         return script
     podcast = get_podcast(pid)
     if podcast is None:
+        print(f"Podcast {pid} not found in database")
         return None
+    print(f"Running news_crawler for {pid}")
     await news_crawler([podcast])
+    print(f"news_crawler completed for {pid}")
     content = get_podcast_content(pid)
     if content is None:
+        print(f"No content found for {pid} after news_crawler")
         return None
+    print(f"Content found for {pid}, length: {len(content) if content else 0}")
     for _ in range(3):
         try:
             script = rewrite_podcast(content)
@@ -142,18 +147,24 @@ async def create_transcript(pid):
 
 
 async def create_podcast(pid):
+    print(f"create_podcast called for {pid}")
     if store.sismember("podcast", pid):
-        print("Podcast already exists")
+        print(f"Podcast {pid} already exists")
         return None, None, None
     store.sadd("podcast", pid)
+    print(f"Added {pid} to podcast generation set")
     try:
         audio = get_podcast_audio(pid)
         lyric = get_podcast_transcript(pid)
         if audio is not None:
+            print(f"Audio already exists for {pid}")
             return audio, lyric, get_audio_duration(audio)
+        print(f"Creating transcript for {pid}")
         script = await create_transcript(pid)
         if script is None:
+            print(f"Failed to create transcript for {pid}")
             return None, None, None
+        print(f"Transcript created for {pid}, length: {len(script) if script else 0}")
         new_lyric = []
         split_pattern = r'[.:]\s+'
         sentences = re.split(split_pattern, script)
@@ -161,18 +172,29 @@ async def create_podcast(pid):
         for text in sentences:
             if text:
                 audio_text += text + ", "
+        print(f"Audio text prepared for {pid}, length: {len(audio_text)}")
+        print(f"Starting audio creation for {pid}")
         audio, lyric = create_audio(audio_text, voice='am_michael')
+        print(f"Audio created for {pid}, lyric lines: {len(lyric) if lyric else 0}")
         for line in lyric:
             new_lyric.append(modify_timestamp(line, 0))
+        print(f"Processing timestamps for {pid}")
         duration = get_audio_duration(audio)
+        print(f"Audio duration calculated for {pid}: {duration}")
         audio.seek(0)
+        print(f"Storing transcript for {pid}")
         store_podcast_transcript(pid, new_lyric)
+        print(f"Storing audio for {pid}")
         store_podcast_audio(pid, audio, duration)
+        print(f"Removing {pid} from podcast generation set")
         store.srem("podcast", pid)
+        print(f"Podcast generation completed successfully for {pid}")
         gc.collect()
         return audio, new_lyric, duration
     except Exception as e:
-        print("podcast error: ", e)
+        print(f"Error in create_podcast for {pid}: {e}")
+        import traceback
+        traceback.print_exc()
         store.srem("podcast", pid)
         gc.collect()
         return None, None, None

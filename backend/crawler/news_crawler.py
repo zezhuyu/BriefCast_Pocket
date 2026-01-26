@@ -99,15 +99,50 @@ url_map = {}
 # dataset = asyncio.run(Dataset.open())
 _crawler_lock = asyncio.Lock()
 
-async def resolve_google_news_redirect(url):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await page.goto(url, wait_until="load")
-        await page.wait_for_timeout(1000)
-        final_url = page.url
-        await browser.close()
-        return final_url
+async def resolve_google_news_redirect(url, timeout=10000):
+    """
+    Resolve Google News redirect URL using Playwright.
+    
+    Args:
+        url: Google News URL to resolve
+        timeout: Timeout in milliseconds (default: 10 seconds)
+    
+    Returns:
+        Final URL after redirect
+    """
+    browser = None
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True, timeout=timeout)
+            context = await browser.new_context()
+            page = await context.new_page()
+            
+            # Set page timeout
+            page.set_default_timeout(timeout)
+            
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+                # Wait a bit for redirects
+                await page.wait_for_timeout(1000)
+                final_url = page.url
+            except Exception as e:
+                # If navigation fails, return original URL
+                print(f"Warning: Failed to resolve redirect for {url}: {e}")
+                final_url = url
+            finally:
+                await context.close()
+                await browser.close()
+            
+            return final_url
+    except Exception as e:
+        print(f"Error in resolve_google_news_redirect for {url}: {e}")
+        # Ensure browser is closed even on error
+        if browser:
+            try:
+                await browser.close()
+            except:
+                pass
+        return url  # Return original URL on error
 
 def is_media_heavy(soup):
     media_tags = soup.find_all(["video", "audio", "iframe", "code"])

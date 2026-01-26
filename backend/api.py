@@ -55,6 +55,10 @@ from user_activity import user_activity_log, search
 from graphql_api import schema
 from crawler.news_crawler import news_crawler
 from crawler.rss import get_all_link, show_rss_links, add_rss_link, delete_rss_link, update_rss_link, get_link_status, check_available_rss_link
+from news_updater import update_news_from_google, update_news_async
+import logging
+
+logger = logging.getLogger(__name__)
 from cuda_stuff import embedding_model
 from constant.preference import topic_embedding, sub_labels_embedding
 load_dotenv()
@@ -230,6 +234,72 @@ def update_user():
         return jsonify({"message": "RSS links updated successfully"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/news/update', methods=['GET', 'POST'])
+@token_required
+def update_news():
+    """
+    Quick update news from Google RSS.
+    
+    Query Parameters (GET) or Body (POST):
+        country: Country code (optional, uses user preferences if not provided)
+        language: Language code (optional, defaults to 'en')
+        sectors: Comma-separated list of sectors (optional, defaults to 'general,tech,business,finance')
+        limit: Number of items per sector (optional, defaults to 20)
+        async: If true, runs in background (optional, defaults to false)
+    """
+    try:
+        user_id = request.environ.get("USER_ID")
+        
+        # Get parameters from query string (GET) or JSON body (POST)
+        if request.method == 'POST':
+            data = request.get_json() or {}
+            country = data.get('country')
+            language = data.get('language', 'en')
+            sectors_str = data.get('sectors', 'general,tech,business,finance')
+            limit = int(data.get('limit', 20))
+            async_mode = data.get('async', False)
+        else:
+            country = request.args.get('country')
+            language = request.args.get('language', 'en')
+            sectors_str = request.args.get('sectors', 'general,tech,business,finance')
+            limit = int(request.args.get('limit', 20))
+            async_mode = request.args.get('async', 'false').lower() == 'true'
+        
+        # Parse sectors
+        sectors = [s.strip() for s in sectors_str.split(',') if s.strip()]
+        
+        if async_mode:
+            # Run in background
+            update_news_async(
+                user_id=user_id,
+                country=country,
+                language=language,
+                sectors=sectors,
+                limit_per_sector=limit
+            )
+            return jsonify({
+                "message": "News update started in background",
+                "status": "processing"
+            }), 202
+        else:
+            # Run synchronously
+            results = update_news_from_google(
+                user_id=user_id,
+                country=country,
+                language=language,
+                sectors=sectors,
+                limit_per_sector=limit
+            )
+            return jsonify({
+                "message": "News update completed",
+                "status": "completed",
+                "results": results
+            }), 200
+    
+    except Exception as e:
+        logger.error(f"Error in update_news endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
     
 @app.route('/rss', methods=['GET'])
 @token_required
@@ -397,8 +467,15 @@ def find_podcast(podcast_id):
         if podcast is None:
             return jsonify({"error": "Podcast not found"}), 404
         def load_content_task():
-            asyncio.run(create_podcast(podcast["id"]))
-        threading.Thread(target=load_content_task).start()
+            try:
+                print(f"Starting podcast generation for {podcast['id']}")
+                result = asyncio.run(create_podcast(podcast["id"]))
+                print(f"Podcast generation completed for {podcast['id']}: {result}")
+            except Exception as e:
+                print(f"Error generating podcast {podcast['id']}: {e}")
+                import traceback
+                traceback.print_exc()
+        threading.Thread(target=load_content_task, daemon=True).start()
         rate = get_user_podcast_rate(user_id, podcast_id)
         if podcast["image_url"] == "":
             podcast["image_url"] = "image/default.png"
@@ -694,6 +771,88 @@ app.add_url_rule(
     "/graphql",
     view_func=token_required(GraphQLView.as_view("graphql_view", schema=schema, graphiql=True))
 )
+
+# Register news API blueprint
+try:
+    from api_news import news_api
+    app.register_blueprint(news_api)
+    print("News API endpoints registered successfully")
+except ImportError as e:
+    print(f"Warning: Could not import news API: {e}")
+    print("News API endpoints will not be available")
+
+# MCP Server endpoints
+try:
+    # Import MCP handler functions
+    from mcp_handler import handle_mcp_request, MCP_TOOLS
+    
+    @app.route('/mcp', methods=['POST'])
+    def mcp_endpoint():
+        """Handle MCP requests via HTTP POST."""
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {
+                        "code": -32700,
+                        "message": "Invalid JSON"
+                    }
+                }), 400
+            
+            method = data.get("method")
+            params = data.get("params", {})
+            request_id = data.get("id")
+            
+            # Handle the request
+            result = handle_mcp_request(method, params)
+            
+            # Check if result contains an error
+            if isinstance(result, dict) and "error" in result:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": result["error"]
+                }
+            else:
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": result
+                }
+            
+            return jsonify(response)
+        
+        except Exception as e:
+            logger.error(f"Error in MCP endpoint: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({
+                "jsonrpc": "2.0",
+                "id": request.get_json().get("id") if request.get_json() else None,
+                "error": {
+                    "code": -32603,
+                    "message": f"Internal error: {str(e)}"
+                }
+            }), 500
+    
+    @app.route('/mcp/health', methods=['GET'])
+    def mcp_health():
+        """MCP server health check endpoint."""
+        return jsonify({
+            "status": "healthy",
+            "service": "briefcast-news-mcp",
+            "tools_available": len(MCP_TOOLS) if 'MCP_TOOLS' in globals() else 0
+        })
+    
+    print("MCP endpoints registered successfully at /mcp")
+except ImportError as e:
+    print(f"Warning: Could not import MCP server: {e}")
+    print("MCP endpoints will not be available")
+except Exception as e:
+    print(f"Warning: Error setting up MCP endpoints: {e}")
+    print("MCP endpoints will not be available")
 
 
 if __name__ == "__main__":

@@ -45,9 +45,16 @@ async def process_feed(row):
     """
     Process a single RSS feed and return its entries.
     """
-    try:        
-        socket.setdefaulttimeout(10)
-        feed = feedparser.parse(row['link'], etag=row['lastEtag'], modified=row['lastModified'])
+    try:
+        # Set timeout per request (not globally)
+        old_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(15)  # 15 second timeout
+        
+        try:
+            feed = feedparser.parse(row['link'], etag=row['lastEtag'], modified=row['lastModified'])
+        finally:
+            # Restore original timeout
+            socket.setdefaulttimeout(old_timeout)
         
         lastEtag = getattr(feed, 'etag', None)
         lastModified = getattr(feed, 'updated', None)
@@ -84,9 +91,14 @@ async def process_feed(row):
                 continue
             if len(title.split()) <= 4:
                 continue
-            lang = detect(title)
-            if not lang.startswith("en"):
-                continue
+            try:
+                lang = detect(title)
+                if lang and not lang.startswith("en"):
+                    continue
+            except Exception as e:
+                # If language detection fails, log but continue (might be valid English)
+                print(f"Language detection failed for title '{title[:50]}...': {e}")
+                # Continue processing - assume it might be English
             if not detect_news_url(link):
                 continue
             if published_at < time.time() - 48 * 60 * 60:
@@ -121,7 +133,8 @@ async def get_all_link(timeout=5, feed_batch_size=10):
     
     store.sadd("rss_links", "rss_links")
     
-    socket.setdefaulttimeout(timeout)
+    # Don't set global timeout - use per-request timeouts in process_feed
+    # socket.setdefaulttimeout(timeout)  # Removed to avoid global side effects
     
     feeds = get_rss_links()
     total_feeds = len(feeds)
@@ -218,13 +231,39 @@ def update_rss_link(rid, link, country, category):
         return False
     
 def check_available_rss_link(rid):
+    """
+    Check if an RSS link is available.
+    Note: This uses asyncio.run() in a thread which can cause issues.
+    Consider using async_manager.safe_async_run() instead.
+    """
     try:
         row = links.get(doc_id=rid)
         if not row:
             return False
-        def check_available():
-            return asyncio.run(process_feed(row))
-        threading.Thread(target=check_available).start()
+        
+        # Use async_manager to avoid event loop issues
+        try:
+            from async_manager import safe_async_run
+            def check_available():
+                safe_async_run(process_feed(row))
+            threading.Thread(target=check_available, daemon=True).start()
+        except ImportError:
+            # Fallback to asyncio.run if async_manager not available
+            def check_available():
+                try:
+                    asyncio.run(process_feed(row))
+                except RuntimeError as e:
+                    # Handle "Event loop is already running" error
+                    if "already running" in str(e):
+                        # Create new event loop in new thread
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            loop.run_until_complete(process_feed(row))
+                        finally:
+                            loop.close()
+            threading.Thread(target=check_available, daemon=True).start()
+        
         return True
     except Exception as e:
         print(f"Error checking available RSS link {rid}: {str(e)}")
