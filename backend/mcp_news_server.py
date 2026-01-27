@@ -16,6 +16,22 @@ sys.stderr = sys.stderr  # Keep stderr as is
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    """Parse bool-ish values coming from tool arguments."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("true", "1", "yes", "y", "on"):
+            return True
+        if v in ("false", "0", "no", "n", "off"):
+            return False
+    return default
+
 try:
     from services.news_service import (
         search_news,
@@ -74,6 +90,11 @@ MCP_TOOLS = [
                     "description": "Language code (en, zh, fr, etc.)",
                     "default": "en"
                 },
+                "extract_content": {
+                    "type": "boolean",
+                    "description": "If true, also fetch full article text (slower).",
+                    "default": False
+                },
                 "user_id": {
                     "type": "string",
                     "description": "User ID for preference lookup"
@@ -108,6 +129,11 @@ MCP_TOOLS = [
                     "description": "Language code (en, zh, fr, etc.)",
                     "default": "en"
                 },
+                "extract_content": {
+                    "type": "boolean",
+                    "description": "If true, also fetch full article text (slower).",
+                    "default": False
+                },
                 "user_id": {
                     "type": "string",
                     "description": "User ID for preference lookup"
@@ -135,6 +161,11 @@ MCP_TOOLS = [
                     "type": "string",
                     "description": "Language code (en, zh, fr, etc.)",
                     "default": "en"
+                },
+                "extract_content": {
+                    "type": "boolean",
+                    "description": "If true, also fetch full article text (slower).",
+                    "default": False
                 },
                 "user_id": {
                     "type": "string",
@@ -167,6 +198,11 @@ MCP_TOOLS = [
                     "type": "string",
                     "description": "Language code (en, zh, fr, etc.)",
                     "default": "en"
+                },
+                "extract_content": {
+                    "type": "boolean",
+                    "description": "If true, also fetch full article text (slower).",
+                    "default": False
                 },
                 "user_id": {
                     "type": "string",
@@ -244,6 +280,11 @@ def handle_mcp_request(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
                     arguments["country"] = prefs.get("country")
                 if not arguments.get("language"):
                     arguments["language"] = prefs.get("language", "en")
+
+            extract_content = _parse_bool(
+                arguments.get("extract_content", arguments.get("extract")),
+                default=False
+            )
             
             try:
                 if tool_name == "search_news":
@@ -258,7 +299,8 @@ def handle_mcp_request(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
                         query=arguments["query"],
                         country=arguments.get("country"),
                         language=arguments.get("language", "en"),
-                        limit=arguments.get("limit", 20)
+                        limit=arguments.get("limit", 20),
+                        extract_content=extract_content
                     )
                     return {
                         "content": [
@@ -281,7 +323,8 @@ def handle_mcp_request(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
                         country=arguments.get("country"),
                         language=arguments.get("language", "en"),
                         sector=arguments.get("sector"),
-                        limit=arguments.get("limit", 20)
+                        limit=arguments.get("limit", 20),
+                        extract_content=extract_content
                     )
                     return {
                         "content": [
@@ -303,7 +346,8 @@ def handle_mcp_request(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
                     result = get_financial_news(
                         country=arguments.get("country"),
                         language=arguments.get("language", "en"),
-                        limit=arguments.get("limit", 20)
+                        limit=arguments.get("limit", 20),
+                        extract_content=extract_content
                     )
                     return {
                         "content": [
@@ -326,7 +370,8 @@ def handle_mcp_request(method: str, params: Dict[str, Any]) -> Dict[str, Any]:
                         company_name=arguments["company"],
                         country=arguments.get("country"),
                         language=arguments.get("language", "en"),
-                        limit=arguments.get("limit", 20)
+                        limit=arguments.get("limit", 20),
+                        extract_content=extract_content
                     )
                     return {
                         "content": [
