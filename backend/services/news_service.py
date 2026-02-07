@@ -327,7 +327,12 @@ def fetch_news_from_rss(
                     import asyncio
                     
                     urls = [item['link'] for item in news_items]
-                    content_results = asyncio.run(extract_content_batch(urls, timeout=30))
+                    from async_manager import run_async_sync
+                    try:
+                        content_results = run_async_sync(extract_content_batch(urls, timeout=30), timeout=300)
+                    except Exception as e:
+                        logger.error(f"Error extracting content batch: {e}")
+                        content_results = {}
                     
                     # Add content to news items
                     for item in news_items:

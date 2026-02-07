@@ -46,6 +46,8 @@ def init_connections():
         if sqlite_client is None:
             sql_file_path = os.path.join(current_file_dir, "dbs", "sql.db")
             sqlite_client = sqlite3.connect(sql_file_path, check_same_thread=False)
+            # Set timeout to prevent database locks
+            sqlite_client.execute("PRAGMA busy_timeout = 30000")  # 30 seconds
     with _milvus_lock:
         global milvus_client
         if milvus_client is None:
@@ -61,6 +63,28 @@ def init_connections():
         #     USER_ID = user_db.all()[0]["id"]
         # else:
         #     USER_ID = None
+
+def refresh_db_connections():
+    """Refresh database connections to prevent staleness"""
+    try:
+        with _sql_lock:
+            global sqlite_client
+            if sqlite_client is not None:
+                try:
+                    # Test connection
+                    sqlite_client.execute("SELECT 1")
+                except Exception as e:
+                    # Connection is stale, recreate it
+                    print(f"SQLite connection stale, refreshing: {e}")
+                    try:
+                        sqlite_client.close()
+                    except:
+                        pass
+                    sql_file_path = os.path.join(current_file_dir, "dbs", "sql.db")
+                    sqlite_client = sqlite3.connect(sql_file_path, check_same_thread=False)
+                    sqlite_client.execute("PRAGMA busy_timeout = 30000")
+    except Exception as e:
+        print(f"Error refreshing database connections: {e}")
 
 init_connections()
 

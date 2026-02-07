@@ -189,8 +189,13 @@ class Query:
                 rate=rate,
             )
         def load_content_task():
-            asyncio.run(create_podcast(podcast["id"]))
-        threading.Thread(target=load_content_task).start()
+            try:
+                from async_manager import safe_async_run
+                safe_async_run(create_podcast(podcast["id"]))
+            except Exception as e:
+                import logging
+                logging.error(f"Error loading podcast content: {e}")
+        threading.Thread(target=load_content_task, daemon=True).start()
         return Podcast(
             id=podcast["id"],
             title=podcast["title"],
@@ -245,8 +250,13 @@ class Query:
             else:
                 raise ValueError("Transition files not found")
         def load_transition_task():
-            asyncio.run(store_transition_audio(id1, id2))
-        threading.Thread(target=load_transition_task).start()
+            try:
+                from async_manager import safe_async_run
+                safe_async_run(store_transition_audio(id1, id2))
+            except Exception as e:
+                import logging
+                logging.error(f"Error loading transition audio: {e}")
+        threading.Thread(target=load_transition_task, daemon=True).start()
         return Transition(
             image_url="image/host.png",
             audio_url="",
@@ -277,8 +287,13 @@ class Query:
                 rate=0,
             )
         def load_summary_task():
-            asyncio.run(create_news_summary_podcast(user_id, pids))
-        threading.Thread(target=load_summary_task).start()
+            try:
+                from async_manager import safe_async_run
+                safe_async_run(create_news_summary_podcast(user_id, pids))
+            except Exception as e:
+                import logging
+                logging.error(f"Error loading summary podcast: {e}")
+        threading.Thread(target=load_summary_task, daemon=True).start()
         return Podcast(
             id=pid,
             title="Summary",
@@ -345,7 +360,14 @@ class Query:
         history = [item["id"] for item in history]
         pids = search_podcast_by_dense(preference_vector, limit=100, history=history, time_range=time.time() - 60 * 60 * 24 * 7)
         podcasts = get_podcasts(pids)
-        pids = asyncio.run(news_crawler(podcasts, find=20))
+        from async_manager import run_async_sync
+        from crawler.news_crawler import news_crawler
+        try:
+            pids = run_async_sync(news_crawler(podcasts, find=20), timeout=300)
+        except Exception as e:
+            import logging
+            logging.error(f"Error in news_crawler: {e}")
+            pids = []
         podcasts = [podcast for podcast in podcasts if podcast["id"] in pids]
         return [PodcastCard(
             id=item["id"],

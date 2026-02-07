@@ -54,37 +54,56 @@ class AsyncTaskManager:
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
             
-            # Run the loop until shutdown
-            while self._running:
-                try:
-                    # Get task from queue with timeout
-                    task = self._task_queue.get(timeout=1.0)
-                    if task is None:  # Shutdown sentinel
-                        break
-                        
-                    # Execute the task
-                    if task:
-                        coro, callback, error_callback = task
-                        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-                        
-                        # Add callbacks
-                        if callback:
-                            future.add_done_callback(lambda f: callback(f.result()) if f.exception() is None else None)
-                        if error_callback:
-                            future.add_done_callback(lambda f: error_callback(f.exception()) if f.exception() is not None else None)
+            # Start the event loop in a separate coroutine
+            async def _process_tasks():
+                while self._running:
+                    try:
+                        # Get task from queue with timeout
+                        try:
+                            task = self._task_queue.get(timeout=0.1)
+                        except queue.Empty:
+                            await asyncio.sleep(0.1)
+                            continue
                             
-                except queue.Empty:
-                    continue
-                except Exception as e:
-                    logger.error(f"Error in async task manager: {e}")
+                        if task is None:  # Shutdown sentinel
+                            break
+                            
+                        # Execute the task
+                        if task:
+                            coro, callback, error_callback = task
+                            try:
+                                result = await coro
+                                if callback:
+                                    try:
+                                        callback(result)
+                                    except Exception as e:
+                                        logger.error(f"Error in task callback: {e}")
+                            except Exception as e:
+                                if error_callback:
+                                    try:
+                                        error_callback(e)
+                                    except Exception as callback_error:
+                                        logger.error(f"Error in error callback: {callback_error}")
+                                else:
+                                    logger.error(f"Unhandled error in async task: {e}", exc_info=True)
+                                    
+                    except Exception as e:
+                        logger.error(f"Error processing task: {e}", exc_info=True)
+                        await asyncio.sleep(0.1)
+            
+            # Run the event loop
+            try:
+                self._loop.run_until_complete(_process_tasks())
+            except Exception as e:
+                logger.error(f"Event loop error: {e}", exc_info=True)
                     
         except Exception as e:
-            logger.error(f"Failed to start async task manager: {e}")
+            logger.error(f"Failed to start async task manager: {e}", exc_info=True)
         finally:
             if self._loop and not self._loop.is_closed():
                 try:
                     # Cancel all remaining tasks
-                    pending = asyncio.all_tasks(self._loop)
+                    pending = [t for t in asyncio.all_tasks(self._loop) if not t.done()]
                     for task in pending:
                         task.cancel()
                     
@@ -98,6 +117,7 @@ class AsyncTaskManager:
                     logger.error(f"Error during loop cleanup: {e}")
                 finally:
                     self._loop.close()
+                    logger.info("AsyncTaskManager event loop closed")
                     
     def submit_task(self, coro, callback=None, error_callback=None):
         """Submit an async task to be executed"""

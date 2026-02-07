@@ -228,11 +228,12 @@ def set_config():
 @token_required
 def update_user():
     try:
-        def update_rss_links():
-            asyncio.run(get_all_link())
-        threading.Thread(target=update_rss_links).start()
+        from async_manager import safe_async_run
+        from crawler.rss import get_all_link
+        safe_async_run(get_all_link())
         return jsonify({"message": "RSS links updated successfully"})
     except Exception as e:
+        logger.error(f"Error refreshing RSS: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/news/update', methods=['GET', 'POST'])
@@ -468,11 +469,12 @@ def find_podcast(podcast_id):
             return jsonify({"error": "Podcast not found"}), 404
         def load_content_task():
             try:
+                from async_manager import safe_async_run
                 print(f"Starting podcast generation for {podcast['id']}")
-                result = asyncio.run(create_podcast(podcast["id"]))
-                print(f"Podcast generation completed for {podcast['id']}: {result}")
+                safe_async_run(create_podcast(podcast["id"]))
+                print(f"Podcast generation queued for {podcast['id']}")
             except Exception as e:
-                print(f"Error generating podcast {podcast['id']}: {e}")
+                logger.error(f"Error generating podcast {podcast['id']}: {e}")
                 import traceback
                 traceback.print_exc()
         threading.Thread(target=load_content_task, daemon=True).start()
@@ -519,8 +521,12 @@ def transition():
             else:
                 return jsonify({"error": "Transition files not found"}), 404
         def load_transition_task():
-            asyncio.run(store_transition_audio(id1, id2))
-        threading.Thread(target=load_transition_task).start()
+            try:
+                from async_manager import safe_async_run
+                safe_async_run(store_transition_audio(id1, id2))
+            except Exception as e:
+                logger.error(f"Error loading transition audio: {e}")
+        threading.Thread(target=load_transition_task, daemon=True).start()
         transition = {
                 "image_url": "image/host.png",
                 "audio_url": "",
@@ -546,8 +552,12 @@ def get_summary():
             podcast["image_url"] = "image/summary.png"
             return jsonify(podcast)
         def load_summary_task():
-            asyncio.run(create_news_summary_podcast(user_id, pids))
-        threading.Thread(target=load_summary_task).start()
+            try:
+                from async_manager import safe_async_run
+                safe_async_run(create_news_summary_podcast(user_id, pids))
+            except Exception as e:
+                logger.error(f"Error loading summary podcast: {e}")
+        threading.Thread(target=load_summary_task, daemon=True).start()
         summary = {
             "id": pid,
             "cluster_id": "",
@@ -619,7 +629,13 @@ def get_recommendations(podcast_id=None):
         history = [item["id"] for item in history]
         pids = search_podcast_by_dense(preference_vector, limit=100, history=history, time_range=time.time() - 60 * 60 * 24 * 7)
         podcasts = get_podcasts(pids)
-        pids = asyncio.run(news_crawler(podcasts, find=20))
+        from async_manager import run_async_sync
+        from crawler.news_crawler import news_crawler
+        try:
+            pids = run_async_sync(news_crawler(podcasts, find=20), timeout=300)
+        except Exception as e:
+            logger.error(f"Error in news_crawler: {e}")
+            pids = []
         podcasts = [podcast for podcast in podcasts if podcast["id"] in pids]
         for podcast in podcasts:
             if podcast["image_url"] == "":

@@ -162,16 +162,9 @@ def extract_content_sync(url: str, timeout: int = 30) -> Optional[Dict[str, str]
     Use this when you need to call from a non-async context.
     """
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # If event loop is already running, we need to use a different approach
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, extract_content_from_url(url, timeout))
-                return future.result(timeout=timeout + 5)
-        else:
-            return loop.run_until_complete(extract_content_from_url(url, timeout))
-    except RuntimeError:
-        # No event loop, create a new one
-        return asyncio.run(extract_content_from_url(url, timeout))
+        from async_manager import run_async_sync
+        return run_async_sync(extract_content_from_url(url, timeout), timeout=timeout + 5)
+    except Exception as e:
+        logger.error(f"Error in extract_content_sync: {e}")
+        return None
 
