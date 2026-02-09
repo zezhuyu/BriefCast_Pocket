@@ -99,15 +99,66 @@ url_map = {}
 # dataset = asyncio.run(Dataset.open())
 _crawler_lock = asyncio.Lock()
 
-async def resolve_google_news_redirect(url):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page()
-        await page.goto(url, wait_until="load")
-        await page.wait_for_timeout(1000)
-        final_url = page.url
-        await browser.close()
+async def resolve_google_news_redirect(url, timeout=10000):
+    """
+    Resolve Google News redirect URL using Playwright.
+    
+    Args:
+        url: Google News URL to resolve
+        timeout: Timeout in milliseconds (default: 10 seconds)
+    
+    Returns:
+        Final URL after redirect
+    """
+    playwright = None
+    browser = None
+    context = None
+    page = None
+    try:
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(headless=True, timeout=timeout)
+        context = await browser.new_context()
+        page = await context.new_page()
+        
+        # Set page timeout
+        page.set_default_timeout(timeout)
+        
+        try:
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+            # Wait a bit for redirects
+            await page.wait_for_timeout(1000)
+            final_url = page.url
+        except Exception as e:
+            # If navigation fails, return original URL
+            print(f"Warning: Failed to resolve redirect for {url}: {e}")
+            final_url = url
+        
         return final_url
+    except Exception as e:
+        print(f"Error in resolve_google_news_redirect for {url}: {e}")
+        return url  # Return original URL on error
+    finally:
+        # Ensure all resources are properly closed
+        try:
+            if page:
+                await page.close()
+        except:
+            pass
+        try:
+            if context:
+                await context.close()
+        except:
+            pass
+        try:
+            if browser:
+                await browser.close()
+        except:
+            pass
+        try:
+            if playwright:
+                await playwright.stop()
+        except:
+            pass
 
 def is_media_heavy(soup):
     media_tags = soup.find_all(["video", "audio", "iframe", "code"])
@@ -231,76 +282,91 @@ async def news_crawler(entries, find=-1) -> None:
     
     links = []
     pids = set()
-    for entry in entries:
-        if find > 0 and len(pids) >= find:
-            break
-        link = entry['link']
-        fetched_at = get_podcast_fetched_time(entry['id'])
-        try:
-            dt = datetime.strptime(fetched_at, "%Y-%m-%d %H:%M:%S.%f")
-        except ValueError:
-            dt = datetime.strptime(fetched_at, "%Y-%m-%d %H:%M:%S")
-        timestamp_float = dt.timestamp()
-        if get_podcast_content(entry['id']) is not None and get_podcast_content(entry['id']) != "":
-            pids.add(entry['id'])
-            continue
-        if timestamp_float > 0:
-            continue
-        if store.sismember("crawler", entry['id']):
-            continue
-        links.append({"link": link, "id": entry['id']})
-        store.sadd("crawler", entry['id'])
-    if find > 0 and len(pids) > find:
-        return list(pids)[:find]
-    elif find == -1:
-        find = len(links)
-    if len(links) == 0:
-        return list(pids)[:min(len(pids), find)]
-    fetched = 0
-    for i in range(0, len(links), find):
-        ava_links = []
-        for link in links[i:i+find]:
-            if get_base_url(link['link'])[0] == "news.google.com":
-                decoded_url = gnewsdecoder(link['link'])
-                if decoded_url.get("status"):
-                    link['link'] = decoded_url["decoded_url"]
-                if link['link'] is None or get_base_url(link['link'])[0] == "news.google.com":
-                    try:
-                        link['link'] = await resolve_google_news_redirect(link['link'])
-                    except:
-                        continue
-            url_map[link['link']] = link['id']
-            ava_links.append(link['link'])
-        try:
-            if crawler._running:
-                await crawler.add_requests(ava_links)
-            else:
-                await crawler.run(ava_links)
-        except Exception as e:
-            print("Crawler error", e)
-        gc.collect()
-        tmp_crawler_data = []
-        async with _crawler_lock:
-            while len(crawler_data) > 0:
-                item = crawler_data.pop(0)
-                if item['url'] in url_map:
-                    pid = url_map[item['url']]
-                    del url_map[item['url']]
-                    if pid is not None and item['available']:
-                        # store_podcast_content(pid, item['content'])
-                        fetched += 1
-                        pids.add(pid)
-                        store.srem("crawler", pid)
-                    # elif pid is not None and not item['available']:
-                    #     update_podcast_fetched_at(pid)
-                    # if item['image_url'] is not None and item['image_url'] != "":
-                    #     update_podcast_image(pid, item['image_url'])
+    try:
+        for entry in entries:
+            if find > 0 and len(pids) >= find:
+                break
+            link = entry['link']
+            fetched_at = get_podcast_fetched_time(entry['id'])
+            try:
+                dt = datetime.strptime(fetched_at, "%Y-%m-%d %H:%M:%S.%f")
+            except ValueError:
+                dt = datetime.strptime(fetched_at, "%Y-%m-%d %H:%M:%S")
+            timestamp_float = dt.timestamp()
+            if get_podcast_content(entry['id']) is not None and get_podcast_content(entry['id']) != "":
+                pids.add(entry['id'])
+                continue
+            if timestamp_float > 0:
+                continue
+            if store.sismember("crawler", entry['id']):
+                continue
+            links.append({"link": link, "id": entry['id']})
+            store.sadd("crawler", entry['id'])
+        if find > 0 and len(pids) > find:
+            return list(pids)[:find]
+        elif find == -1:
+            find = len(links)
+        if len(links) == 0:
+            return list(pids)[:min(len(pids), find)]
+        fetched = 0
+        for i in range(0, len(links), find):
+            ava_links = []
+            for link in links[i:i+find]:
+                if get_base_url(link['link'])[0] == "news.google.com":
+                    decoded_url = gnewsdecoder(link['link'])
+                    if decoded_url.get("status"):
+                        link['link'] = decoded_url["decoded_url"]
+                    if link['link'] is None or get_base_url(link['link'])[0] == "news.google.com":
+                        try:
+                            link['link'] = await resolve_google_news_redirect(link['link'])
+                        except Exception as e:
+                            print(f"Error resolving redirect for {link['link']}: {e}")
+                            continue
+                url_map[link['link']] = link['id']
+                ava_links.append(link['link'])
+            try:
+                if crawler._running:
+                    await crawler.add_requests(ava_links)
                 else:
-                    tmp_crawler_data.append(item)
+                    await crawler.run(ava_links)
+            except Exception as e:
+                print(f"Crawler error: {e}")
+            gc.collect()
+            tmp_crawler_data = []
+            async with _crawler_lock:
+                # Process crawler data and clean up url_map
+                while len(crawler_data) > 0:
+                    item = crawler_data.pop(0)
+                    if item['url'] in url_map:
+                        pid = url_map[item['url']]
+                        del url_map[item['url']]
+                        if pid is not None and item['available']:
+                            # store_podcast_content(pid, item['content'])
+                            fetched += 1
+                            pids.add(pid)
+                            store.srem("crawler", pid)
+                    else:
+                        tmp_crawler_data.append(item)
+            async with _crawler_lock:
+                crawler_data.extend(tmp_crawler_data)
+            if fetched >= find:
+                break
+        gc.collect()
+        return list(pids)[:min(len(pids), find)]
+    finally:
+        # Cleanup: remove processed entries from url_map to prevent memory leaks
         async with _crawler_lock:
-            crawler_data.extend(tmp_crawler_data)
-        if fetched >= find:
-            break
-    gc.collect()
-    return list(pids)[:min(len(pids), find)]
+            # Keep only entries that are still being processed
+            processed_urls = set()
+            for item in crawler_data:
+                if 'url' in item:
+                    processed_urls.add(item['url'])
+            # Remove URLs that are no longer in crawler_data
+            urls_to_remove = [url for url in url_map.keys() if url not in processed_urls]
+            for url in urls_to_remove:
+                if url in url_map:
+                    del url_map[url]
+            # Limit crawler_data size to prevent unbounded growth
+            if len(crawler_data) > 1000:
+                crawler_data = crawler_data[-500:]  # Keep only last 500 items
 

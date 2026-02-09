@@ -46,6 +46,8 @@ def init_connections():
         if sqlite_client is None:
             sql_file_path = os.path.join(current_file_dir, "dbs", "sql.db")
             sqlite_client = sqlite3.connect(sql_file_path, check_same_thread=False)
+            # Set timeout to prevent database locks
+            sqlite_client.execute("PRAGMA busy_timeout = 30000")  # 30 seconds
     with _milvus_lock:
         global milvus_client
         if milvus_client is None:
@@ -61,6 +63,28 @@ def init_connections():
         #     USER_ID = user_db.all()[0]["id"]
         # else:
         #     USER_ID = None
+
+def refresh_db_connections():
+    """Refresh database connections to prevent staleness"""
+    try:
+        with _sql_lock:
+            global sqlite_client
+            if sqlite_client is not None:
+                try:
+                    # Test connection
+                    sqlite_client.execute("SELECT 1")
+                except Exception as e:
+                    # Connection is stale, recreate it
+                    print(f"SQLite connection stale, refreshing: {e}")
+                    try:
+                        sqlite_client.close()
+                    except:
+                        pass
+                    sql_file_path = os.path.join(current_file_dir, "dbs", "sql.db")
+                    sqlite_client = sqlite3.connect(sql_file_path, check_same_thread=False)
+                    sqlite_client.execute("PRAGMA busy_timeout = 30000")
+    except Exception as e:
+        print(f"Error refreshing database connections: {e}")
 
 init_connections()
 
@@ -179,6 +203,40 @@ def get_user_location(user_id):
     except Exception as e:
         print(e)
         return None
+
+def get_user_preferences(user_id):
+    """Get user preferences (country and language)."""
+    try:
+        with _user_lock:
+            user = user_db.get(Query().id == user_id)
+            if user:
+                return {
+                    "country": user.get("country"),
+                    "language": user.get("language", "en")
+                }
+            return None
+    except Exception as e:
+        print(e)
+        return None
+
+def update_user_preferences(user_id, country=None, language=None):
+    """Update user preferences (country and language)."""
+    try:
+        with _user_lock:
+            user = user_db.get(Query().id == user_id)
+            if user:
+                update_data = {}
+                if country is not None:
+                    update_data["country"] = country
+                if language is not None:
+                    update_data["language"] = language
+                if update_data:
+                    user_db.update(update_data, doc_ids=[user.doc_id])
+                return True
+            return False
+    except Exception as e:
+        print(e)
+        return False
     
 def get_user_preference_vector(user_id):
     try:
@@ -630,18 +688,30 @@ def create_podcast(title, link, published_at, podcast, daily=None):
             audio_url = podcast.get("audio_url", "")
             transcript_url = podcast.get("transcript_url", "")
             duration = podcast.get("duration", 0)
+            embedding = None
+            sparse = None
+            vector = None
             if daily is None:
-                embedding = embed_text([title])
-                sparse = embedding['sparse'][0]
-                sparse = dict(zip(sparse.col.tolist(), sparse.data.tolist()))
-                vector = embedding['dense'][0]
+                try:
+                    embedding = embed_text([title])
+                    sparse = embedding['sparse'][0]
+                    sparse = dict(zip(sparse.col.tolist(), sparse.data.tolist()))
+                    vector = embedding['dense'][0]
+                except (AttributeError, TypeError) as embed_error:
+                    # If embedding model is not available (e.g., in MCP server context), skip embedding
+                    # This allows creating podcasts without embeddings when model isn't loaded
+                    if "encode_documents" in str(embed_error) or "NoneType" in str(embed_error):
+                        # Embedding model not available, continue without embedding
+                        pass
+                    else:
+                        raise
             cursor = sqlite_client.cursor()
             insert_query = """
             INSERT INTO podcasts (id, daily, title, link, published_at, fetched_at, content_url, cover_image_url, audio_url, transcript_url, duration_seconds)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             cursor.execute(insert_query, (pid, daily, title, link, published_ts, fetched_ts, content_url, image_url, audio_url, transcript_url, duration))
-            if daily is None:
+            if daily is None and vector is not None:
                 with _milvus_lock:
                     milvus_client.insert(
                         collection_name="briefcast",
@@ -657,13 +727,15 @@ def create_podcast(title, link, published_at, podcast, daily=None):
                     milvus_client.flush(collection_name="briefcast")
             
             sqlite_client.commit()
-        if daily is None:
+        if daily is None and vector is not None:
             tag_hot_trending(vector)
         return pid
     except Exception as e:
         with _sql_lock:
             sqlite_client.rollback()
-            print(e)
+            # Don't print to stdout - use logging or stderr instead
+            import sys
+            print(f"Error in create_podcast: {e}", file=sys.stderr)
             return None
     
 def get_user_podcast(user_id):

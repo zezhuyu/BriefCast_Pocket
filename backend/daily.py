@@ -87,8 +87,14 @@ def generate_daily_podcast(user_id, force=False, location=None, limit=5, summary
         if force and last_daily_update > time.time() - 60 * 10:
             return podcast
     def load_content_task():
-        asyncio.run(store_daily_news(user_id, location, limit=limit, force=force, summary=summary))
-    threading.Thread(target=load_content_task).start()
+        try:
+            from async_manager import safe_async_run
+            safe_async_run(store_daily_news(user_id, location, limit=limit, force=force, summary=summary))
+        except Exception as e:
+            print(f"Error loading daily news: {e}")
+            import traceback
+            traceback.print_exc()
+    threading.Thread(target=load_content_task, daemon=True).start()
     data = {
             "id": "",
             "title": "Briefcast Daily News " + datetime.now().strftime("%m-%d"),
