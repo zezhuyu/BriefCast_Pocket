@@ -1,0 +1,251 @@
+import { app, BrowserWindow, ipcMain, shell } from "electron";
+import fs from "node:fs";
+import path from "node:path";
+import { config as loadDotenv } from "dotenv";
+import { BriefcastAppService } from "./services/appService";
+import { ApiBridgeServer } from "./services/apiBridge";
+import {
+  AppSettings,
+  DownloadSaveInput,
+  HistoryTrackInput,
+  MediaResourceFormat,
+  SearchMode,
+  UserPreferenceSettings,
+} from "../shared/types";
+
+function loadEnvironmentFile(): void {
+  const explicitEnv = process.env.BRIEFCAST_ENV_FILE;
+  const candidates = [
+    explicitEnv,
+    path.resolve(process.cwd(), ".env"),
+    path.resolve(process.resourcesPath, ".env")
+  ].filter((value): value is string => Boolean(value));
+
+  for (const filePath of candidates) {
+    if (!fs.existsSync(filePath)) continue;
+    loadDotenv({ path: filePath, override: true });
+    console.log(`[env] loaded ${filePath}`);
+    return;
+  }
+
+  console.log("[env] no .env file found (using process environment only)");
+}
+
+loadEnvironmentFile();
+
+const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
+let mainWindow: BrowserWindow | null = null;
+let service: BriefcastAppService;
+let apiBridge: ApiBridgeServer | null = null;
+
+function resolveAppIconPath(): string | undefined {
+  const candidate = path.resolve(__dirname, "../assets/app-icon.png");
+  return fs.existsSync(candidate) ? candidate : undefined;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function loadDevUrlWithRetry(win: BrowserWindow, url: string): Promise<void> {
+  const maxAttempts = 60;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await win.loadURL(url);
+      return;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!message.includes("ERR_CONNECTION_REFUSED")) throw error;
+      if (attempt === maxAttempts) throw error;
+      await sleep(1000);
+    }
+  }
+}
+
+async function createWindow(): Promise<void> {
+  const appIconPath = resolveAppIconPath();
+
+  mainWindow = new BrowserWindow({
+    width: 1320,
+    height: 900,
+    minWidth: 1000,
+    minHeight: 720,
+    backgroundColor: "#1e1b4b",
+    icon: appIconPath,
+    titleBarStyle: "hiddenInset",
+    trafficLightPosition: { x: 16, y: 16 },
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      webSecurity: false  // allow file:// audio URLs from renderer
+    }
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: "deny" };
+  });
+
+  if (isDev) {
+    const devUrl = process.env.VITE_DEV_SERVER_URL as string;
+    try {
+      await loadDevUrlWithRetry(mainWindow, devUrl);
+    } catch {
+      await mainWindow.loadURL(
+        `data:text/html;charset=utf-8,${encodeURIComponent(
+          "<html><body style='font-family:sans-serif;padding:24px'><h2>Renderer not ready</h2><p>Vite dev server did not become available.</p></body></html>"
+        )}`
+      );
+    }
+  } else {
+    await mainWindow.loadFile(path.join(__dirname, "../dist-renderer/index.html"));
+  }
+}
+
+function scheduleDailyGeneration(svc: BriefcastAppService): void {
+  // Trigger daily podcast generation at 10:00am each day
+  function msUntil10am(): number {
+    const now = new Date();
+    const target = new Date(now);
+    target.setHours(10, 0, 0, 0);
+    if (target <= now) target.setDate(target.getDate() + 1);
+    return target.getTime() - now.getTime();
+  }
+
+  function scheduleNext(): void {
+    setTimeout(async () => {
+      console.log("[scheduler] 10am — triggering daily podcast generation");
+      try {
+        await svc.forceDailyPodcast();
+        await svc.cleanupOldPodcastFiles();
+      } catch (err) {
+        console.error("[scheduler] daily generation failed:", err);
+      }
+      scheduleNext();
+    }, msUntil10am());
+  }
+
+  scheduleNext();
+}
+
+function registerIpcHandlers(): void {
+  // ── Settings ──────────────────────────────────────────────────────────────
+  ipcMain.handle("settings:get", () => service.getSettings());
+  ipcMain.handle("settings:save", (_e, s: AppSettings) => service.saveSettings(s));
+
+  // ── News ──────────────────────────────────────────────────────────────────
+  ipcMain.handle("news:sync", () => service.syncNews());
+  ipcMain.handle("news:search", (_e, q: string, mode: SearchMode, limit?: number) =>
+    service.searchArticles(q, mode, limit)
+  );
+  ipcMain.handle("news:preference-search", (_e, description: string, limit?: number) =>
+    service.preferenceSearch(description, limit)
+  );
+
+  // ── Text briefing ─────────────────────────────────────────────────────────
+  ipcMain.handle("briefing:generate", () => service.generateDailyBriefing());
+  ipcMain.handle("briefing:list", (_e, limit?: number) => service.getBriefings(limit));
+
+  // ── Library ───────────────────────────────────────────────────────────────
+  ipcMain.handle("library:recommendations", (_e, limit?: number) => service.getRecommendations(limit));
+  ipcMain.handle("library:trending", (_e, limit?: number) => service.getTrending(limit));
+
+  // ── History ───────────────────────────────────────────────────────────────
+  ipcMain.handle("history:list", (_e, limit?: number) => service.getHistory(limit));
+  ipcMain.handle("history:track", (_e, input: HistoryTrackInput) => service.trackHistory(input));
+
+  // ── Downloads ─────────────────────────────────────────────────────────────
+  ipcMain.handle("downloads:list", (_e, limit?: number) => service.getDownloads(limit));
+  ipcMain.handle("downloads:save", (_e, input: DownloadSaveInput) => service.saveDownload(input));
+  ipcMain.handle("downloads:remove", (_e, id: string) => service.removeDownload(id));
+
+  // ── Media resources ───────────────────────────────────────────────────────
+  ipcMain.handle("media:manifest", () => service.getMediaManifest());
+  ipcMain.handle("media:read", (_e, name: string, format?: MediaResourceFormat) =>
+    service.readMediaResource(name, format ?? "base64")
+  );
+
+  // ── Podcast audio generation ──────────────────────────────────────────────
+  ipcMain.handle("episode:generate", (_e, recommendationId: string) =>
+    service.generateEpisode(recommendationId)
+  );
+  ipcMain.handle("podcast:get-daily", () => service.getDailyPodcast());
+  ipcMain.handle("podcast:force-daily", () => service.forceDailyPodcast());
+  ipcMain.handle("podcast:generate-audio", (_e, recommendationId: string) =>
+    service.generatePodcastAudio(recommendationId)
+  );
+  ipcMain.handle("podcast:generate-summary", (_e, podcastIds: string[]) =>
+    service.generateSummaryPodcast(podcastIds)
+  );
+  ipcMain.handle("podcast:get", (_e, podcastId: string) => service.getPodcastById(podcastId));
+  ipcMain.handle("podcast:rate", (_e, podcastId: string, rating: number) =>
+    service.ratePodcast(podcastId, rating)
+  );
+
+  // ── Playlists ─────────────────────────────────────────────────────────────
+  ipcMain.handle("playlist:list", () => service.getPlaylists());
+  ipcMain.handle("playlist:create", (_e, name: string, description?: string) =>
+    service.createPlaylist(name, description)
+  );
+  ipcMain.handle("playlist:delete", (_e, playlistId: string) => service.deletePlaylist(playlistId));
+  ipcMain.handle("playlist:add", (_e, playlistId: string, podcastId: string) =>
+    service.addToPlaylist(playlistId, podcastId)
+  );
+  ipcMain.handle("playlist:remove", (_e, playlistId: string, podcastId: string) =>
+    service.removeFromPlaylist(playlistId, podcastId)
+  );
+
+  // ── User profile ──────────────────────────────────────────────────────────
+  ipcMain.handle("user:get", () => service.getUserProfile());
+  ipcMain.handle("user:update", (_e, prefs: Partial<UserPreferenceSettings>) =>
+    service.updateUserProfile(prefs)
+  );
+
+}
+
+app
+  .whenReady()
+  .then(async () => {
+    service = new BriefcastAppService(app.getPath("userData"));
+    const appIconPath = resolveAppIconPath();
+    if (appIconPath && process.platform === "darwin") {
+      app.dock.setIcon(appIconPath);
+    }
+
+    const enableApiBridge = process.env.BRIEFCAST_ENABLE_API_BRIDGE === "1";
+    if (enableApiBridge) {
+      apiBridge = new ApiBridgeServer(service);
+      apiBridge.start();
+    } else {
+      console.log("[embedded-api-bridge] disabled (set BRIEFCAST_ENABLE_API_BRIDGE=1 to enable)");
+    }
+
+    registerIpcHandlers();
+    await createWindow();
+    scheduleDailyGeneration(service);
+
+    app.on("activate", async () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        await createWindow();
+      }
+    });
+  })
+  .catch((error) => {
+    console.error("[app] Startup failure:", error);
+    app.exit(1);
+  });
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
+});
+
+app.on("before-quit", () => {
+  apiBridge?.stop();
+  apiBridge = null;
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[app] Unhandled rejection:", reason);
+});
