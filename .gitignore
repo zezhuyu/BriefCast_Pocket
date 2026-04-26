@@ -69,4 +69,6 @@ Thumbs.db
 AGENTS.md
 CLAUDE.md
 .claude/
+.omx/desktop/src-tauri/api
 .omx/
+desktop/src-tauri/api

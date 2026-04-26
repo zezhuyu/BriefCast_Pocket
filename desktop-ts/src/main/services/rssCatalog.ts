@@ -56,10 +56,9 @@ function readRows(csvPath: string): RssRow[] {
 
 export function resolveRssCsvPath(): string | null {
   const candidates = [
-    "/Volumes/sambigdisk1/code/BriefCast_Pocket/backend/db/rss.csv",
     path.resolve(process.cwd(), "../backend/db/rss.csv"),
     path.resolve(process.cwd(), "backend/db/rss.csv"),
-    path.resolve(process.cwd(), "../../backend/db/rss.csv")
+    path.resolve(process.cwd(), "../../backend/db/rss.csv"),
   ];
 
   for (const candidate of candidates) {

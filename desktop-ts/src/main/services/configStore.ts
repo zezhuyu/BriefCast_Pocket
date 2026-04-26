@@ -55,42 +55,42 @@ export class ConfigStore {
         ...DEFAULT_SETTINGS.providers,
         ...partial.providers,
         activeProvider:
-          (process.env.BRIEFCAST_ACTIVE_PROVIDER as AppSettings["providers"]["activeProvider"] | undefined) ??
           partial.providers?.activeProvider ??
+          (process.env.BRIEFCAST_ACTIVE_PROVIDER as AppSettings["providers"]["activeProvider"] | undefined) ??
           DEFAULT_SETTINGS.providers.activeProvider,
         openaiCompatible: {
           ...DEFAULT_SETTINGS.providers.openaiCompatible,
           ...(partial.providers?.openaiCompatible ?? {}),
-          baseUrl: process.env.BRIEFCAST_OPENAI_BASE_URL ?? partial.providers?.openaiCompatible?.baseUrl ?? DEFAULT_SETTINGS.providers.openaiCompatible.baseUrl,
-          apiKey: process.env.BRIEFCAST_OPENAI_API_KEY ?? partial.providers?.openaiCompatible?.apiKey ?? DEFAULT_SETTINGS.providers.openaiCompatible.apiKey,
-          model: process.env.BRIEFCAST_OPENAI_MODEL ?? partial.providers?.openaiCompatible?.model ?? DEFAULT_SETTINGS.providers.openaiCompatible.model,
+          baseUrl: partial.providers?.openaiCompatible?.baseUrl ?? process.env.BRIEFCAST_OPENAI_BASE_URL ?? DEFAULT_SETTINGS.providers.openaiCompatible.baseUrl,
+          apiKey: partial.providers?.openaiCompatible?.apiKey ?? process.env.BRIEFCAST_OPENAI_API_KEY ?? DEFAULT_SETTINGS.providers.openaiCompatible.apiKey,
+          model: partial.providers?.openaiCompatible?.model ?? process.env.BRIEFCAST_OPENAI_MODEL ?? DEFAULT_SETTINGS.providers.openaiCompatible.model,
           embeddingModel:
-            process.env.BRIEFCAST_OPENAI_EMBEDDING_MODEL ??
             partial.providers?.openaiCompatible?.embeddingModel ??
+            process.env.BRIEFCAST_OPENAI_EMBEDDING_MODEL ??
             DEFAULT_SETTINGS.providers.openaiCompatible.embeddingModel
         },
         anthropic: {
           ...DEFAULT_SETTINGS.providers.anthropic,
           ...(partial.providers?.anthropic ?? {}),
-          apiKey: process.env.BRIEFCAST_ANTHROPIC_API_KEY ?? partial.providers?.anthropic?.apiKey ?? DEFAULT_SETTINGS.providers.anthropic.apiKey,
-          model: process.env.BRIEFCAST_ANTHROPIC_MODEL ?? partial.providers?.anthropic?.model ?? DEFAULT_SETTINGS.providers.anthropic.model
+          apiKey: partial.providers?.anthropic?.apiKey ?? process.env.BRIEFCAST_ANTHROPIC_API_KEY ?? DEFAULT_SETTINGS.providers.anthropic.apiKey,
+          model: partial.providers?.anthropic?.model ?? process.env.BRIEFCAST_ANTHROPIC_MODEL ?? DEFAULT_SETTINGS.providers.anthropic.model
         },
         codexCli: {
           ...DEFAULT_SETTINGS.providers.codexCli,
           ...(partial.providers?.codexCli ?? {}),
-          command: process.env.BRIEFCAST_CODEX_COMMAND ?? partial.providers?.codexCli?.command ?? DEFAULT_SETTINGS.providers.codexCli.command,
+          command: partial.providers?.codexCli?.command ?? process.env.BRIEFCAST_CODEX_COMMAND ?? DEFAULT_SETTINGS.providers.codexCli.command,
           argsTemplate:
-            process.env.BRIEFCAST_CODEX_ARGS_TEMPLATE ??
             partial.providers?.codexCli?.argsTemplate ??
+            process.env.BRIEFCAST_CODEX_ARGS_TEMPLATE ??
             DEFAULT_SETTINGS.providers.codexCli.argsTemplate
         },
         claudeCli: {
           ...DEFAULT_SETTINGS.providers.claudeCli,
           ...(partial.providers?.claudeCli ?? {}),
-          command: process.env.BRIEFCAST_CLAUDE_COMMAND ?? partial.providers?.claudeCli?.command ?? DEFAULT_SETTINGS.providers.claudeCli.command,
+          command: partial.providers?.claudeCli?.command ?? process.env.BRIEFCAST_CLAUDE_COMMAND ?? DEFAULT_SETTINGS.providers.claudeCli.command,
           argsTemplate:
-            process.env.BRIEFCAST_CLAUDE_ARGS_TEMPLATE ??
             partial.providers?.claudeCli?.argsTemplate ??
+            process.env.BRIEFCAST_CLAUDE_ARGS_TEMPLATE ??
             DEFAULT_SETTINGS.providers.claudeCli.argsTemplate
         }
       },
@@ -101,18 +101,29 @@ export class ConfigStore {
       },
       preferences: {
         ...DEFAULT_SETTINGS.preferences,
-        ...partial.preferences
+        ...partial.preferences,
+        dailyBriefingCount: Math.max(
+          1,
+          Math.min(
+            20,
+            Math.floor(
+              Number(partial.preferences?.dailyBriefingCount ?? DEFAULT_SETTINGS.preferences.dailyBriefingCount) ||
+              DEFAULT_SETTINGS.preferences.dailyBriefingCount
+            )
+          )
+        )
       },
       tts: {
         ...DEFAULT_SETTINGS.tts,
         ...(partial.tts ?? {}),
         provider:
-          (process.env.BRIEFCAST_TTS_PROVIDER as AppSettings["tts"]["provider"] | undefined) ??
           partial.tts?.provider ??
+          (process.env.BRIEFCAST_TTS_PROVIDER as AppSettings["tts"]["provider"] | undefined) ??
           DEFAULT_SETTINGS.tts.provider,
-        voice: process.env.BRIEFCAST_TTS_VOICE ?? partial.tts?.voice ?? DEFAULT_SETTINGS.tts.voice,
-        model: process.env.BRIEFCAST_TTS_MODEL ?? partial.tts?.model ?? DEFAULT_SETTINGS.tts.model,
-        systemVoice: process.env.BRIEFCAST_TTS_SYSTEM_VOICE ?? partial.tts?.systemVoice ?? DEFAULT_SETTINGS.tts.systemVoice
+        voice: partial.tts?.voice ?? process.env.BRIEFCAST_TTS_VOICE ?? DEFAULT_SETTINGS.tts.voice,
+        model: partial.tts?.model ?? process.env.BRIEFCAST_TTS_MODEL ?? DEFAULT_SETTINGS.tts.model,
+        systemVoice: partial.tts?.systemVoice ?? process.env.BRIEFCAST_TTS_SYSTEM_VOICE ?? DEFAULT_SETTINGS.tts.systemVoice,
+        hostVoice: partial.tts?.hostVoice ?? process.env.BRIEFCAST_TTS_HOST_VOICE ?? DEFAULT_SETTINGS.tts.hostVoice
       }
     };
   }

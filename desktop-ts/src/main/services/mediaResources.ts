@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import {
   MediaManifest,
@@ -6,9 +7,26 @@ import {
   MediaResourcePayload
 } from "../../shared/types";
 
-const DEFAULT_RESOURCE_DIR =
-  process.env.BRIEFCAST_RESOURCE_DIR ??
-  "/Volumes/sambigdisk1/code/BriefCast_Pocket/backend/db/resources";
+function resolveResourceDir(): string {
+  if (process.env.BRIEFCAST_RESOURCE_DIR) {
+    return process.env.BRIEFCAST_RESOURCE_DIR;
+  }
+  // Prioritize desktop-ts local resources first, then fall back to parent/sibling folders
+  const candidates = [
+    path.resolve(process.cwd(), "backend/db/resources"),  // desktop-ts local resources
+    path.resolve(process.cwd(), "../backend/db/resources"),
+    path.resolve(process.cwd(), "../../backend/db/resources"),
+    "/Volumes/sambigdisk1/code/BriefCast_Pocket/backend/db/resources",
+  ];
+  for (const candidate of candidates) {
+    if (fsSync.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[0];
+}
+
+const DEFAULT_RESOURCE_DIR = resolveResourceDir();
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".m4a", ".ogg"]);

@@ -49,6 +49,7 @@ export interface PipelineOptions {
   title?: string;
   isSummary?: boolean;
   location?: string;    // "lat,lon" — enables weather forecast in opening
+  skipIntroOutro?: boolean; // if true, skip opening/ending segments (for single/summary podcasts)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -121,14 +122,15 @@ function offsetLrc(lrc: string, offsetSeconds: number): string {
     .join("\n");
 }
 
-/** Estimate speaking duration from text (~16 chars/sec). */
+/** Estimate speaking duration from text (~2.8 words/sec ≈ 168 wpm). */
 function textToLrc(text: string, startSeconds = 0): { lrc: string; endSeconds: number } {
   const sentences = text.split(/(?<=[.!?])\s+/).map((s) => s.trim()).filter(Boolean);
   let cursor = startSeconds;
   const lines: string[] = [];
   for (const sentence of sentences) {
     lines.push(`${secondsToLrcTs(cursor)}${sentence}`);
-    cursor += Math.max(2, Math.ceil(sentence.length / 16));
+    const words = sentence.split(/\s+/).filter(Boolean).length;
+    cursor += Math.max(0.5, words / 2.8);
   }
   return { lrc: lines.join("\n"), endSeconds: cursor };
 }
@@ -389,11 +391,27 @@ async function ffmpegMixWithBg(
 
 async function buildStoryScript(settings: AppSettings, article: ArticleInput): Promise<string> {
   const prompt = [
-    "Write a podcast narration for one news story. Style: clear, natural, conversational, no markdown.",
-    "Keep it to 3-5 sentences. Output plain text only.",
-    `Title: ${article.title}`,
+    "You are a professional BBC news correspondent delivering an in-depth radio news report.",
+    "",
+    "Write a detailed 1-2 minute spoken news report (approximately 200-300 words) based on the following story.",
+    "",
+    "Structure your report like a BBC journalist:",
+    "1. Lead with the key news hook - what happened and why it matters",
+    "2. Provide essential context and background",
+    "3. Include relevant details, facts, or figures from the summary",
+    "4. Explain the implications or what this means for listeners",
+    "5. End with what to watch for next or a forward-looking statement",
+    "",
+    "Style guidelines:",
+    "- Use a professional, authoritative but accessible tone",
+    "- Write for the ear, not the eye - use natural spoken English",
+    "- Vary sentence length for rhythm and engagement",
+    "- No markdown, asterisks, bullet points, or special formatting",
+    "- Output plain spoken text only, ready for text-to-speech",
+    "",
+    `Story Title: ${article.title}`,
     `Source: ${article.sourceName}`,
-    `Summary: ${article.summary || "No summary available."}`,
+    `Details: ${article.summary || "No additional details available."}`,
   ].join("\n");
   return generateText(settings, prompt);
 }
@@ -413,11 +431,29 @@ async function buildTransition(settings: AppSettings, fromTitle: string, toTitle
 }
 
 async function buildSummaryScript(settings: AppSettings, articles: ArticleInput[]): Promise<string> {
-  const summaries = articles.map((a, i) => `${i + 1}. ${a.title}: ${a.summary || "No details."}`).join("\n");
+  const summaries = articles.map((a, i) => `${i + 1}. ${a.title}\n   ${a.summary || "No details available."}`).join("\n\n");
   const prompt = [
-    "Write a podcast narration summarizing these news stories into a cohesive briefing.",
-    "Style: clear, natural, no markdown. Output flowing paragraphs.",
-    "News stories:",
+    "You are a BBC World Service news anchor delivering a comprehensive news briefing.",
+    "",
+    `Write a detailed ${articles.length > 3 ? "3-5" : "2-3"} minute spoken news summary (approximately ${articles.length > 3 ? "400-600" : "250-400"} words) covering these stories.`,
+    "",
+    "Structure your briefing like a professional news program:",
+    "1. Open with a brief overview of the major themes in today's news",
+    "2. Cover each story with:",
+    "   - The key development and why it matters",
+    "   - Essential context or background",
+    "   - Implications for listeners",
+    "3. Use smooth transitions between stories to maintain flow",
+    "4. Close with a forward-looking statement about what to watch",
+    "",
+    "Style guidelines:",
+    "- Professional, authoritative but accessible BBC-style tone",
+    "- Write for the ear - natural spoken English with varied rhythm",
+    "- Connect related stories where appropriate",
+    "- No markdown, asterisks, bullet points, or special formatting",
+    "- Output plain spoken text only, ready for text-to-speech",
+    "",
+    "Stories to cover:",
     summaries,
   ].join("\n");
   return generateText(settings, prompt);
@@ -426,9 +462,9 @@ async function buildSummaryScript(settings: AppSettings, articles: ArticleInput[
 // ── Main pipeline ─────────────────────────────────────────────────────────────
 
 export async function generateDailyPodcast(opts: PipelineOptions): Promise<PipelinePodcast> {
-  const { baseDir, resourceDir, settings, articles, isSummary = false, location } = opts;
+  const { baseDir, resourceDir, settings, articles, isSummary = false, location, skipIntroOutro = false } = opts;
 
-  console.log(`[pipeline] starting — articles:${articles.length} isSummary:${isSummary} tts:${settings.tts.provider} location:${location ?? "none"}`);
+  console.log(`[pipeline] starting — articles:${articles.length} isSummary:${isSummary} skipIntroOutro:${skipIntroOutro} tts:${settings.tts.provider} location:${location ?? "none"}`);
 
   const audioDir = path.join(baseDir, "audio");
   const lrcDir = path.join(baseDir, "transcript");
@@ -456,6 +492,81 @@ export async function generateDailyPodcast(opts: PipelineOptions): Promise<Pipel
     try { return await fs.readFile(path.join(resourceDir, name), "utf8"); }
     catch { return null; }
   };
+
+  // ── Skip intro/outro for single podcast or summary (just content) ─────────
+  if (skipIntroOutro) {
+    // Simple mode: just the news content with news host style narration
+    if (isSummary) {
+      // Summary: combine all articles into one cohesive briefing
+      let script: string;
+      try {
+        script = await buildSummaryScript(settings, articles);
+      } catch {
+        script = articles.map((a) => `${a.title}. ${a.summary || ""}`).join(" Next, ");
+      }
+      console.log("[pipeline] synthesising summary (no intro/outro)…");
+      const audio = await synthesizeSpeech(settings, script);
+      const ext = audio.mimeType.includes("aiff") ? "aiff" : "mp3";
+      const p = path.join(tmpDir, `summary.${ext}`);
+      await fs.writeFile(p, audio.buffer);
+      tempFiles.push(p);
+      audioFiles.push(p);
+      const lrc = textToLrc(script, cursor);
+      lrcParts.push(lrc.lrc);
+      cursor = lrc.endSeconds;
+    } else {
+      // Single/multi article: narrate each story, no transitions between (it's typically just 1)
+      for (let i = 0; i < articles.length; i++) {
+        const article = articles[i];
+        let script: string;
+        console.log(`[pipeline] story ${i + 1}/${articles.length}: "${article.title.slice(0, 60)}" (no intro/outro)`);
+        try {
+          script = await buildStoryScript(settings, article);
+        } catch (err) {
+          console.warn(`[pipeline] buildStoryScript failed:`, err);
+          script = `${article.title}. ${article.summary || "More details available online."}`;
+        }
+
+        console.log(`[pipeline] synthesising story ${i + 1}…`);
+        const audio = await synthesizeSpeech(settings, script);
+        const ext = audio.mimeType.includes("aiff") ? "aiff" : "mp3";
+        const p = path.join(tmpDir, `story_${i}.${ext}`);
+        await fs.writeFile(p, audio.buffer);
+        tempFiles.push(p);
+        audioFiles.push(p);
+        const lrc = textToLrc(script, cursor);
+        lrcParts.push(lrc.lrc);
+        cursor = lrc.endSeconds + 0.5;
+      }
+    }
+
+    // ── Combine all audio (simple mode) ─────────────────────────────────────
+    const id = randomUUID();
+    const audioPath = path.join(audioDir, `${id}.mp3`);
+    const lrcPath = path.join(lrcDir, `${id}.lrc`);
+
+    if (ffmpeg && audioFiles.length > 0) {
+      console.log(`[pipeline] ffmpeg concat of ${audioFiles.length} segments → ${audioPath}`);
+      await ffmpegConcat(ffmpeg, audioFiles, audioPath);
+    } else if (audioFiles.length > 0) {
+      console.log("[pipeline] raw buffer concat fallback");
+      const buffers = await Promise.all(audioFiles.map((f) => fs.readFile(f)));
+      await fs.writeFile(audioPath, Buffer.concat(buffers));
+    } else {
+      throw new Error("No audio segments generated");
+    }
+
+    await fs.writeFile(lrcPath, lrcParts.filter(Boolean).join("\n"));
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+
+    const today = new Date().toISOString().slice(0, 10);
+    const title = opts.title ?? (isSummary ? "BriefCast Summary" : articles[0]?.title ?? `BriefCast – ${today}`);
+
+    console.log(`[pipeline] done (simple mode) — duration:${Math.round(cursor)}s audio:${audioPath}`);
+    return { id, title, audioPath, lrcPath, durationSeconds: Math.round(cursor), publishedAt: Date.now() };
+  }
+
+  // ── Full pipeline with intro/outro (daily briefing) ───────────────────────
 
   // ── Load all resource audio ───────────────────────────────────────────────
   const [opWav, openingWav, startingWav, endingWav, edWav] = await Promise.all([
@@ -588,7 +699,7 @@ export async function generateDailyPodcast(opts: PipelineOptions): Promise<Pipel
       cursor += startingDur;
     }
   } else {
-    // No ffmpeg or no resource audio — synthesise a simple greeting
+    // No ffmpeg or no resource audio — synthesise a simple greeting + optional weather
     const now = new Date();
     const greetingText = `${getGreeting(now.getHours())}! Today is ${formatDateLong(now)}. ${
       isSummary ? "Here is your personalized news summary." : "Here are your top stories from around the world."
@@ -605,6 +716,31 @@ export async function generateDailyPodcast(opts: PipelineOptions): Promise<Pipel
       cursor = greetLrc.endSeconds + 1;
     } catch (e) {
       console.warn("[pipeline] fallback greeting TTS failed:", e);
+    }
+
+    // Weather forecast (no ffmpeg mix — append as a separate segment)
+    if (location) {
+      console.log("[pipeline] fetching weather for", location);
+      const rawWeather = await fetchWeatherData(location);
+      if (rawWeather) {
+        const weatherScript = await buildWeatherScript(settings, rawWeather);
+        if (weatherScript) {
+          console.log("[pipeline] synthesising weather forecast…");
+          try {
+            const wAudio = await synthesizeSpeech(settings, weatherScript);
+            const ext = wAudio.mimeType.includes("aiff") ? "aiff" : "mp3";
+            const wp = path.join(tmpDir, `weather.${ext}`);
+            await fs.writeFile(wp, wAudio.buffer);
+            tempFiles.push(wp);
+            audioFiles.push(wp);
+            const wLrc = textToLrc(weatherScript, cursor);
+            lrcParts.push(wLrc.lrc);
+            cursor = wLrc.endSeconds + 0.5;
+          } catch (e) {
+            console.warn("[pipeline] weather TTS failed:", e);
+          }
+        }
+      }
     }
   }
 

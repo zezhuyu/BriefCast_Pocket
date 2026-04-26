@@ -159,22 +159,14 @@ export default function HistoryPage() {
       <header className="bg-white/10 backdrop-blur-md shadow-lg">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
           <div className="flex items-center gap-2">
-            <Link href="/" className="text-2xl font-bold text-white">BriefCast</Link>
+            {/* <Link href="/" className="text-2xl font-bold text-white">BriefCast</Link> */}
           </div>
           <div className="flex items-center gap-4">
             <Link href="/" className="text-white/80 hover:text-white">Player</Link>
             <Link href="/library" className="text-white/80 hover:text-white">Library</Link>
             <Link href="/downloads" className="text-white/80 hover:text-white">Downloads</Link>
-            <Link href="/history" className="text-white font-medium">History</Link>
-            <Link 
-                href="/dashboard" 
-                className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white/80 hover:text-white transition-all duration-200 border border-white/20 hover:border-white/40"
-                title="Dashboard"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                </svg>
-              </Link>
+            <Link href="/history" className="text-amber-400 font-medium">History</Link>
+            <Link href="/settings" className="text-white/80 hover:text-white">Settings</Link>
           </div>
         </div>
       </header>

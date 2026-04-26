@@ -54,6 +54,14 @@ type Playlist = {
   podcasts: Podcast[];
 };
 
+type TransitionPodcast = {
+  id: string;
+  image_url: string;
+  transcript_url: string;
+  audio_url: string;
+  duration_seconds?: number;
+};
+
 type PlayerContextType = {
   currentPodcast: Podcast | null;
   isPlaying: boolean;
@@ -113,6 +121,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [autoPlay, setAutoPlay] = useState(false);
+  const transitionCacheRef = useRef<Record<string, TransitionPodcast>>({});
+  const transitionPrefetchRef = useRef<Record<string, boolean>>({});
+  const transitionInFlightRef = useRef<Record<string, Promise<TransitionPodcast | null>>>({});
   const router = useRouter();
   const pathname = usePathname();
   // Track if the next podcast change is from automatic transition
@@ -541,6 +552,83 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     return combined;
   };
 
+  const isAbsoluteUrl = (value: string): boolean =>
+    value.startsWith('http://') ||
+    value.startsWith('https://') ||
+    value.startsWith('file://') ||
+    value.startsWith('blob:') ||
+    value.startsWith('data:');
+
+  const toAbsoluteBackendUrl = (rawUrl: string): string => {
+    if (!rawUrl) return rawUrl;
+    if (isAbsoluteUrl(rawUrl)) return rawUrl;
+    const base = process.env.NEXT_PUBLIC_BACKEND_URL || '';
+    if (!base) return rawUrl;
+    const normalizedBase = base.endsWith('/') ? base : `${base}/`;
+    const normalizedPath = rawUrl.startsWith('/') ? rawUrl.slice(1) : rawUrl;
+    return `${normalizedBase}${normalizedPath}`;
+  };
+
+  const getNextPodcastIdFromState = (podcast: Podcast | null): string | null => {
+    if (!podcast) return null;
+
+    if (currentPlaylist) {
+      const currentIndex = currentPlaylist.podcasts.findIndex(p => p.id === podcast.id);
+      if (currentIndex >= 0 && currentIndex < currentPlaylist.podcasts.length - 1) {
+        return currentPlaylist.podcasts[currentIndex + 1].id;
+      }
+    }
+
+    if (tmpPlaylist.length > 0) {
+      const currentIndex = tmpPlaylist.findIndex(p => p.id === podcast.id);
+      if (currentIndex === -1) return tmpPlaylist[0].id;
+      if (currentIndex < tmpPlaylist.length - 1) return tmpPlaylist[currentIndex + 1].id;
+    }
+
+    return null;
+  };
+
+  const ensureTransition = async (currentId: string, nextId: string): Promise<TransitionPodcast | null> => {
+    const key = `${currentId}:${nextId}`;
+    if (transitionCacheRef.current[key]) {
+      return transitionCacheRef.current[key];
+    }
+    if (transitionInFlightRef.current[key]) {
+      return transitionInFlightRef.current[key];
+    }
+
+    const request = (async () => {
+      try {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}transition`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id1: currentId, id2: nextId }),
+          cache: 'no-cache'
+        });
+        if (!response.ok) return null;
+        const data = await safeJsonParse(response);
+        if (!data || !data.audio_url) return null;
+
+        const normalized: TransitionPodcast = {
+          id: data.id || `transition-${currentId}-${nextId}`,
+          image_url: toAbsoluteBackendUrl(String(data.image_url || '')),
+          transcript_url: toAbsoluteBackendUrl(String(data.transcript_url || '')),
+          audio_url: toAbsoluteBackendUrl(String(data.audio_url || '')),
+          duration_seconds: Number(data.duration_seconds || data.secs || 0) || undefined
+        };
+        transitionCacheRef.current[key] = normalized;
+        return normalized;
+      } catch {
+        return null;
+      } finally {
+        delete transitionInFlightRef.current[key];
+      }
+    })();
+
+    transitionInFlightRef.current[key] = request;
+    return request;
+  };
+
   // Initialize audio element
   useEffect(() => {
     audioRef.current = new Audio();
@@ -928,6 +1016,22 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
     fetchPodcast();
   }, [currentPodcast])
+
+  useEffect(() => {
+    if (!currentPodcast || isPlayingTransition || !duration || duration <= 0) return;
+
+    const nextId = getNextPodcastIdFromState(currentPodcast);
+    if (!nextId) return;
+
+    const remaining = duration - currentTime;
+    if (remaining > 20) return;
+
+    const key = `${currentPodcast.id}:${nextId}`;
+    if (transitionPrefetchRef.current[key]) return;
+    transitionPrefetchRef.current[key] = true;
+    void ensureTransition(currentPodcast.id, nextId);
+  }, [currentPodcast?.id, currentTime, duration, currentPlaylist, tmpPlaylist, isPlayingTransition]);
+
   // Play next podcast in playlist
   const playNext = (skipTransition: boolean = false) => {
     // Before moving away from the current podcast, flush activity data
@@ -1007,10 +1111,26 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // desktop-ts has no transition API — play next podcast directly
-  const loadAndPlayTransition = (_currentId: string, nextId: string) => {
-    setIsAutomaticTransition(true);
-    setPodcastId(nextId);
+  const loadAndPlayTransition = async (currentId: string, nextId: string) => {
+    const transition = await ensureTransition(currentId, nextId);
+    if (!transition?.audio_url || !audioRef.current) {
+      setIsAutomaticTransition(true);
+      setPodcastId(nextId);
+      return;
+    }
+
+    try {
+      setNextPodcastId(nextId);
+      setIsPlayingTransition(true);
+      audioRef.current.src = transition.audio_url;
+      audioRef.current.load();
+      await attemptAutoplay(audioRef.current);
+    } catch {
+      setIsPlayingTransition(false);
+      setNextPodcastId(null);
+      setIsAutomaticTransition(true);
+      setPodcastId(nextId);
+    }
   };
 
   // Modify the useEffect for audio ended to handle transitions

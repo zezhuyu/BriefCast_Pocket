@@ -134,7 +134,14 @@ const api: RendererBridge = {
   },
   updateUserProfile(prefs: Partial<UserPreferenceSettings>): Promise<UserProfile> {
     return ipcRenderer.invoke("user:update", prefs);
-  }
+  },
+
+  // Settings hotload
+  onSettingsChanged(cb: (settings: AppSettings) => void): () => void {
+    const handler = (_e: Electron.IpcRendererEvent, settings: AppSettings) => cb(settings);
+    ipcRenderer.on("settings:changed", handler);
+    return () => ipcRenderer.removeListener("settings:changed", handler);
+  },
 };
 
 contextBridge.exposeInMainWorld("briefcast", api);

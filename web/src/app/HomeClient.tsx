@@ -348,6 +348,7 @@ export default function Home() {
   const [isAvailableOffline, setIsAvailableOffline] = useState(false);
   const [isOnline, setIsOnline] = useState(true);
   const [isTauri, setIsTauri] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   
 
   // Use the player context
@@ -842,34 +843,35 @@ export default function Home() {
   // If no podcast is selected yet, show a loading state
   if (!currentPodcast) {
     return (
-      <div className={`containermin-h-screen bg-gradient-to-br from-indigo-900/90 to-purple-900/90 text-white ${isTauri ? 'mt-8' : ''}`}>
+      <div className={`w-full min-h-screen bg-gradient-to-br from-indigo-900/90 to-purple-900/90 text-white ${isTauri ? 'mt-8' : ''}`}>
         <header className=" backdrop-blur-md ">
           <div className="container mx-auto px-4 py-4 flex justify-between items-center">
             <div className="flex items-center gap-2">
-              <Link href="/" className="text-2xl font-bold text-white">BriefCast</Link>
+              {/* <Link href="/" className="text-2xl font-bold text-white">BriefCast</Link> */}
             </div>
             <div className="flex items-center gap-4">
-              <Link href="/" className="text-white/80 font-medium">Player</Link>
+              <Link href="/" className="text-amber-400 font-medium">Player</Link>
               <Link href="/library" className="text-white/80 hover:text-white">Library</Link>
               <Link href="/downloads" className="text-white/80 hover:text-white">Downloads</Link>
               <Link href="/history" className="text-white/80 hover:text-white">History</Link>
-              <Link 
-                href="/dashboard" 
+              <Link href="/settings" className="text-white/80 hover:text-white">Settings</Link>
+              {/* <Link
+                href="/dashboard"
                 className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white/80 hover:text-white transition-all duration-200 border border-white/20 hover:border-white/40"
                 title="Dashboard"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                 </svg>
-              </Link>
+              </Link> */}
             </div>
           </div>
         </header>
         <main className="h-screen container max-w-6xl mx-auto px-4 pt-4 pb-12 relative z-10">
-        {!isTauri &&
+        {/* {!isTauri &&
           <h1 className="text-4xl font-bold mb-12 text-center bg-gradient-to-r from-amber-500 to-amber-600 text-transparent bg-clip-text">
             BriefCast
-          </h1>}
+          </h1>} */}
           
           <div className="flex items-center justify-center h-full">
             Loading...
@@ -1000,34 +1002,35 @@ export default function Home() {
       </div>
       
       {/* <main className="container max-w-6xl mx-auto px-4 py-12 relative z-10"> */}
-      <div className={`containermin-h-screen bg-gradient-to-br from-indigo-900/90 to-purple-900/90 text-white ${isTauri ? 'mt-8' : ''}`}>
+      <div className={`w-full min-h-screen bg-gradient-to-br from-indigo-900/90 to-purple-900/90 text-white ${isTauri ? 'mt-8' : ''}`}>
         <header className=" backdrop-blur-md ">
           <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-            <div className="flex items-center gap-2">
-              <Link href="/" className="text-2xl font-bold text-white">BriefCast</Link>
+            <div className="flex items-center gap-2 ml-16">
+              {/* <Link href="/" className="text-2xl font-bold text-white">BriefCast</Link> */}
             </div>
             <div className="flex items-center gap-4">
-              <Link href="/" className="text-white/80 font-medium">Player</Link>
+              <Link href="/" className="text-amber-400 font-medium">Player</Link>
               <Link href="/library" className="text-white/80 hover:text-white">Library</Link>
               <Link href="/downloads" className="text-white/80 hover:text-white">Downloads</Link>
               <Link href="/history" className="text-white/80 hover:text-white">History</Link>
-              <Link 
-                href="/dashboard" 
+              <Link href="/settings" className="text-white/80 hover:text-white">Settings</Link>
+              {/* <Link
+                href="/dashboard"
                 className="p-2 rounded-full bg-white/10 hover:bg-white/20 text-white/80 hover:text-white transition-all duration-200 border border-white/20 hover:border-white/40"
                 title="Dashboard"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                 </svg>
-              </Link>
+              </Link> */}
             </div>
           </div>
         </header>
         <main className="container max-w-6xl mx-auto px-4 pt-4 pb-12 relative z-10">
-        {!isTauri &&
+        {/* {!isTauri &&
           <h1 className="text-4xl font-bold mb-12 text-center bg-gradient-to-r from-amber-500 to-amber-600 text-transparent bg-clip-text">
             BriefCast
-          </h1>}
+          </h1>} */}
           
           <div 
             className="backdrop-blur-xl bg-gradient-to-br from-black/10 to-black/30 rounded-2xl p-8 mx-auto border border-white/20 shadow-lg"

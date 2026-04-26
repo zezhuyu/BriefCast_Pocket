@@ -1,11 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ConfigStore } from "./configStore";
 import { BriefcastDb } from "./db";
 import { LegacyStateService, LegacyRssLink } from "./legacyState";
 import { MediaResourceService } from "./mediaResources";
-import { dedupeArticles, enrichWithArticleImages, fetchDevTo, fetchGithubTrending, fetchGoogleNews, fetchHackerNews, fetchLobsters, fetchProductHunt, fetchReddit, fetchRssNews, fetchSlashdot } from "./newsSources";
+import { dedupeArticles, enrichWithArticleImages, fetchDevTo, fetchGithubTrending, fetchGoogleNews, fetchHackerNews, fetchLobsters, fetchProductHunt, fetchReddit, fetchRssNews, fetchSlashdot, fetchTopHeadlines, IngestArticle } from "./newsSources";
 import { embedText, generateText, synthesizeSpeech } from "./providers";
 import { generateDailyPodcast } from "./podcastPipeline";
 import {
@@ -23,6 +23,7 @@ import {
   Podcast,
   PlaylistInfo,
   PlaylistItem,
+  PreferenceActivityInput,
   RecommendationPodcast,
   SearchMode,
   SearchResult,
@@ -31,22 +32,56 @@ import {
   UserProfile
 } from "../../shared/types";
 
-/** Resolve device location as "lat,lon" string via IP geolocation (silent fallback). */
+/** Resolve device location as "lat,lon" string via IP geolocation with fallback services. */
 async function getIpLocation(): Promise<string | null> {
-  try {
-    const res = await fetch("https://ipapi.co/json/", {
-      headers: { "User-Agent": "BriefCast/1.0" },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { latitude?: number; longitude?: number };
-    if (typeof data.latitude === "number" && typeof data.longitude === "number") {
-      return `${data.latitude.toFixed(2)},${data.longitude.toFixed(2)}`;
+  type GeoResponse = { latitude?: number; longitude?: number; lat?: number; lon?: number };
+
+  const services: Array<{ url: string; parse: (d: GeoResponse) => [number, number] | null }> = [
+    {
+      url: "https://ipapi.co/json/",
+      parse: (d) =>
+        typeof d.latitude === "number" && typeof d.longitude === "number"
+          ? [d.latitude, d.longitude]
+          : null,
+    },
+    {
+      url: "https://ip-api.com/json/?fields=lat,lon,status",
+      parse: (d) =>
+        typeof d.lat === "number" && typeof d.lon === "number" ? [d.lat, d.lon] : null,
+    },
+    {
+      url: "https://ipwho.is/",
+      parse: (d) =>
+        typeof d.latitude === "number" && typeof d.longitude === "number"
+          ? [d.latitude, d.longitude]
+          : null,
+    },
+  ];
+
+  for (const svc of services) {
+    try {
+      const res = await fetch(svc.url, {
+        headers: { "User-Agent": "BriefCast/1.0" },
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) {
+        console.warn(`[getIpLocation] ${svc.url} returned ${res.status}`);
+        continue;
+      }
+      const data = (await res.json()) as GeoResponse;
+      const coords = svc.parse(data);
+      if (coords) {
+        console.log(`[getIpLocation] resolved via ${svc.url}: ${coords[0].toFixed(2)},${coords[1].toFixed(2)}`);
+        return `${coords[0].toFixed(2)},${coords[1].toFixed(2)}`;
+      }
+      console.warn(`[getIpLocation] ${svc.url} returned no coords:`, JSON.stringify(data).slice(0, 120));
+    } catch (err) {
+      console.warn(`[getIpLocation] ${svc.url} failed:`, err);
     }
-    return null;
-  } catch {
-    return null;
   }
+
+  console.warn("[getIpLocation] all geolocation services failed — weather will be skipped");
+  return null;
 }
 
 function dateKeyNow(): string {
@@ -121,6 +156,7 @@ interface LegacyPodcast {
   favorite: boolean;
   published_at: number;
   link: string;
+  text?: string;
 }
 
 export class BriefcastAppService {
@@ -133,14 +169,24 @@ export class BriefcastAppService {
   private readonly legacyNowPlaying: Map<string, { podcastId: string; position: number; updatedAt: number }>;
   private readonly legacyDailyCache: Map<string, LegacyPodcast>;
   private readonly legacyDailyInFlight: Set<string>;
+  private readonly legacyTransitionInFlight: Map<string, Promise<LegacyPodcast>>;
+  private readonly podcastGenerationInFlight: Map<string, Promise<Podcast>>;
+  private podcastGenerationQueue: Promise<void> = Promise.resolve();
   private settings: AppSettings;
   // Write-through in-memory cache backed by SQLite
   private readonly podcastCache: Map<string, Podcast>;
-  private dailyInFlight: boolean;
-  private currentDailyDateKey: string;
   private readonly baseDir: string;
   // Shared promise so concurrent ensureSeedNews callers wait for the same sync
   private seedNewsPromise: Promise<void> | null = null;
+  // Single in-flight promise for daily podcast — guarantees at most one generation runs
+  private _dailyPodcastPromise: Promise<Podcast | null> | null = null;
+  private _dailyPodcastDateKey: string = "";
+  private preferenceActivityCounter = 0;
+  // Cache for top headlines (15-min TTL) — avoids re-fetching on every trending call
+  private _trendingCache: { ts: number; items: RecommendationPodcast[] } = { ts: 0, items: [] };
+  private static readonly TRENDING_TTL_MS = 15 * 60 * 1000;
+  // Cached city resolved once from IP geolocation (null = unknown or failed)
+  private _ipCityPromise: Promise<string | null> | null = null;
 
   constructor(baseDir: string) {
     this.configStore = new ConfigStore(baseDir);
@@ -152,10 +198,10 @@ export class BriefcastAppService {
     this.legacyNowPlaying = new Map();
     this.legacyDailyCache = new Map();
     this.legacyDailyInFlight = new Set();
+    this.legacyTransitionInFlight = new Map();
+    this.podcastGenerationInFlight = new Map();
     this.settings = this.configStore.load();
     this.podcastCache = new Map();
-    this.dailyInFlight = false;
-    this.currentDailyDateKey = "";
     this.baseDir = baseDir;
   }
 
@@ -166,6 +212,17 @@ export class BriefcastAppService {
   saveSettings(input: AppSettings): AppSettings {
     this.settings = this.configStore.save(input);
     return this.settings;
+  }
+
+  /** Returns the epoch ms of the last completed news sync (0 if never). */
+  getLastSyncTime(): number {
+    const val = this.legacyState.getEnvConfig()["lastNewsSyncAt"];
+    return val ? parseInt(val, 10) || 0 : 0;
+  }
+
+  /** Stamps the current time as the last completed sync. */
+  private markSyncTime(): void {
+    this.legacyState.setEnvConfig({ lastNewsSyncAt: String(Date.now()) });
   }
 
   async syncNews(): Promise<SyncResult> {
@@ -181,13 +238,24 @@ export class BriefcastAppService {
     console.log("[syncNews] rssFeeds count:", rssFeeds.length, "| custom:", this.settings.sources.rssFeeds.length, "| fallback:", fallbackRssFeeds.length);
 
     if (this.settings.sources.rssEnabled && rssFeeds.length) {
-      console.log("[syncNews] fetching RSS from", rssFeeds.length, "feeds…");
+      const sixHoursMs = 6 * 60 * 60 * 1000;
+      const feedsToFetch = rssFeeds.filter((feed) => this.legacyState.shouldCheckRssFeed(feed, sixHoursMs));
+      console.log("[syncNews] fetching RSS from", feedsToFetch.length, "/", rssFeeds.length, "feeds…");
+      if (!feedsToFetch.length) {
+        console.log("[syncNews] RSS skipped (all feeds checked within last 6 hours)");
+      } else {
       try {
-        const rss = await fetchRssNews(rssFeeds, 30);
+          const rss = await fetchRssNews(feedsToFetch, 30);
         console.log("[syncNews] RSS returned", rss.length, "articles");
         all.push(...rss);
       } catch (error) {
         sourceErrors.push(`rss:${error instanceof Error ? error.message : String(error)}`);
+        console.error("[syncNews] RSS error:", error);
+      } finally {
+          for (const feed of feedsToFetch) {
+            this.legacyState.markRssFeedChecked(feed);
+          }
+        }
       }
     } else {
       console.log("[syncNews] RSS skipped (enabled:", this.settings.sources.rssEnabled, "feeds:", rssFeeds.length, ")");
@@ -300,6 +368,7 @@ export class BriefcastAppService {
     let inserted = 0;
     let updated = 0;
     let skipped = 0;
+    let imagesUpdated = 0;
 
     const embeddingModel =
       this.settings.providers.activeProvider === "openai-compatible"
@@ -307,8 +376,12 @@ export class BriefcastAppService {
         : "local-hash-v1";
 
     for (const article of deduped) {
-      // Skip articles already in DB — no need to re-embed on periodic syncs
+      // Check if article already exists
       if (this.db.articleExistsByUrl(article.url)) {
+        // Even for existing articles, update image if we have one and they don't
+        if (article.imageUrl && this.db.updateArticleImageIfMissing(article.url, article.imageUrl)) {
+          imagesUpdated += 1;
+        }
         skipped += 1;
         continue;
       }
@@ -333,7 +406,8 @@ export class BriefcastAppService {
     if (sourceErrors.length) {
       console.warn("[syncNews] source errors:", sourceErrors.join("; "));
     }
-    console.log(`[syncNews] done — inserted:${inserted} updated:${updated} skipped:${skipped}`);
+    console.log(`[syncNews] done — inserted:${inserted} updated:${updated} skipped:${skipped} images_backfilled:${imagesUpdated}`);
+    this.markSyncTime();
 
     return {
       fetched: deduped.length,
@@ -341,6 +415,44 @@ export class BriefcastAppService {
       updated,
       skipped
     };
+  }
+
+  /**
+   * Backfill images for existing articles that don't have one.
+   * Scrapes article pages to extract og:image. Runs in batches to avoid overloading.
+   */
+  async backfillMissingImages(batchSize = 50): Promise<number> {
+    const missing = this.db.getArticlesMissingImages(batchSize);
+    if (!missing.length) {
+      console.log("[backfillImages] no articles missing images");
+      return 0;
+    }
+
+    console.log(`[backfillImages] enriching ${missing.length} articles without images`);
+
+    // Build fake IngestArticle objects for the enrichment function
+    const toEnrich: IngestArticle[] = missing.map((row) => ({
+      title: "",
+      url: row.url,
+      sourceType: "rss" as const,
+      sourceName: "",
+      summary: "",
+      content: "",
+      publishedAt: 0,
+      imageUrl: undefined,
+    }));
+
+    await enrichWithArticleImages(toEnrich);
+
+    let updated = 0;
+    for (const article of toEnrich) {
+      if (article.imageUrl && this.db.updateArticleImageIfMissing(article.url, article.imageUrl)) {
+        updated += 1;
+      }
+    }
+
+    console.log(`[backfillImages] updated ${updated}/${missing.length} articles with images`);
+    return updated;
   }
 
   async searchArticles(query: string, mode: SearchMode, limit = 30): Promise<SearchResult[]> {
@@ -480,6 +592,29 @@ export class BriefcastAppService {
     return parts.join(" ");
   }
 
+  /** Resolve the user's city from IP geolocation (cached for the service lifetime). */
+  private getIpCity(): Promise<string | null> {
+    if (!this._ipCityPromise) {
+      this._ipCityPromise = (async () => {
+        try {
+          const res = await fetch("https://ipapi.co/json/", {
+            headers: { "User-Agent": "BriefCast/1.0" },
+            signal: AbortSignal.timeout(5000),
+          });
+          if (!res.ok) return null;
+          const data = (await res.json()) as { city?: string; region?: string; country_name?: string };
+          const city = data.city || null;
+          const country = data.country_name || null;
+          if (city && country) return `${city}, ${country}`;
+          return city || country || null;
+        } catch {
+          return null;
+        }
+      })();
+    }
+    return this._ipCityPromise;
+  }
+
   /**
    * Build a rich natural-language preference description by asking the LLM.
    * Blends manual topic settings with behavioral signals (listen completion + ratings).
@@ -490,8 +625,15 @@ export class BriefcastAppService {
     const topicList = topics.filter(Boolean).join(", ") || "general news";
     const behaviorSummary = this.buildBehavioralSignalSummary();
 
+    // Resolve city in parallel — best-effort; don't block if it fails
+    const city = await Promise.race([
+      this.getIpCity(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000))
+    ]);
+
     // Template fallback (used when LLM unavailable)
-    const fallback = `News articles about ${topicList} relevant to a reader in ${region || "the US"} who prefers content in ${language || "English"}. Focus on recent developments, analysis, and key events.`;
+    const localHint = city ? ` Include some local news from ${city}.` : "";
+    const fallback = `News articles about ${topicList} relevant to a reader in ${region || "the US"} who prefers content in ${language || "English"}.${localHint} Focus on recent developments, analysis, and key events.`;
 
     try {
       const promptLines = [
@@ -503,6 +645,9 @@ export class BriefcastAppService {
         `  Topics of interest: ${topicList}`,
         `  Region: ${region || "US"}`,
         `  Language: ${language || "English"}`,
+        ...(city
+          ? [`  User's city: ${city} — blend in some city-level local news for this location. World news, national news, and technology news are NOT filtered by city.`]
+          : []),
       ];
       if (behaviorSummary) {
         promptLines.push("", "Behavioral signals (use to refine the description):", `  ${behaviorSummary}`);
@@ -562,69 +707,139 @@ export class BriefcastAppService {
   }
 
   async getRecommendations(limit = 100): Promise<RecommendationPodcast[]> {
-    await this.ensureSeedNews();
-    const manifest = await this.mediaResources.getManifest();
-    const imageResource = manifest.defaults.speakerImage || "default.png";
-
-    // Use AI-generated preference description + semantic search for ranking
-    const preferenceDescription = await this.buildPreferenceDescription();
-    console.log("[getRecommendations] running preference search with description length:", preferenceDescription.length);
-
-    let semanticResults: SearchResult[] = [];
-    try {
-      semanticResults = await this.preferenceSearch(preferenceDescription, Math.max(limit * 2, 200));
-      console.log("[getRecommendations] preference search returned:", semanticResults.length, "results");
-    } catch (err) {
-      console.warn("[getRecommendations] preference search failed, falling back to recency ranking:", err instanceof Error ? err.message : err);
-    }
-
-    const historySeen = new Set(this.db.getHistory(600).map((item) => item.recommendationId));
-
-    if (semanticResults.length) {
-      // Convert SearchResult → RecommendationPodcast, filter already-seen
-      const filtered = semanticResults
-        .filter((r) => !historySeen.has(r.id))
-        .slice(0, limit)
-        .map((r) => ({
-          id: r.id,
-          title: r.title,
-          subcategory: r.sourceName,
-          sourceName: r.sourceName,
-          sourceType: r.sourceType,
-          summary: r.summary,
-          url: r.url,
-          publishedAt: r.publishedAt,
-          estimatedDurationSeconds: 180,
-          imageResource,
-          imageUrl: r.imageUrl,
-        } as RecommendationPodcast));
-
-      if (filtered.length) {
-        return filtered;
+    // Only block for seed sync when the DB is truly empty; otherwise return immediately.
+    const hasData = this.db.recentArticles(1).length > 0;
+    if (!hasData) {
+      try {
+        await Promise.race([
+          this.ensureSeedNews(),
+          new Promise<void>((resolve) => setTimeout(resolve, 8000))
+        ]);
+      } catch (err) {
+        console.warn("[getRecommendations] ensureSeedNews failed/timed out:", err instanceof Error ? err.message : err);
       }
     }
 
-    // Fallback: plain recency-ordered candidates from DB
-    const candidates = this.db.getRecommendations(Math.max(limit * 4, 160), imageResource);
-    console.log("[getRecommendations] fallback candidates from DB:", candidates.length);
-    if (!candidates.length) {
+    let imageResource = "default.png";
+    try {
+      const manifest = await this.mediaResources.getManifest();
+      imageResource = manifest.defaults.speakerImage || "default.png";
+    } catch (err) {
+      console.warn("[getRecommendations] failed to load media manifest, using default image:", err instanceof Error ? err.message : err);
+    }
+
+    // Exclude items already in trending cache to avoid duplication
+    const trendingIds = new Set(this._trendingCache.items.map((t) => t.id));
+
+    const historySeen = new Set(this.db.getHistory(600).map((item) => item.recommendationId));
+    const fallbackCandidates = this.db
+      .getRecommendations(Math.max(limit * 4, 160), imageResource)
+      .filter((item) => !historySeen.has(item.id) && !trendingIds.has(item.id))
+      .slice(0, limit);
+
+    try {
+      // Bound personalization latency so endpoint stays responsive.
+      // Increased timeouts to allow LLM calls to complete (was 3s/5s, now 10s/15s)
+      const preferenceDescription = await Promise.race<string>([
+        this.buildPreferenceDescription(),
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error("preference description timeout")), 10000))
+      ]);
+      console.log("[getRecommendations] running preference search with description length:", preferenceDescription.length);
+
+      const semanticResults = await Promise.race<SearchResult[]>([
+        this.preferenceSearch(preferenceDescription, Math.max(limit * 2, 200)),
+        new Promise<SearchResult[]>((_, reject) => setTimeout(() => reject(new Error("preference search timeout")), 15000))
+      ]);
+      console.log("[getRecommendations] preference search returned:", semanticResults.length, "results");
+
+      if (semanticResults.length) {
+        const filtered = semanticResults
+          .filter((r) => !historySeen.has(r.id) && !trendingIds.has(r.id))
+          .slice(0, limit)
+          .map((r) => ({
+            id: r.id,
+            title: r.title,
+            subcategory: r.sourceName,
+            sourceName: r.sourceName,
+            sourceType: r.sourceType,
+            summary: r.summary,
+            url: r.url,
+            publishedAt: r.publishedAt,
+            estimatedDurationSeconds: 180,
+            imageResource,
+            imageUrl: r.imageUrl,
+          } as RecommendationPodcast));
+
+        if (filtered.length) {
+          return filtered;
+        }
+      }
+    } catch (err) {
+      console.warn("[getRecommendations] personalized ranking unavailable, using fallback:", err instanceof Error ? err.message : err);
+    }
+
+    console.log("[getRecommendations] fallback candidates from DB:", fallbackCandidates.length);
+    if (!fallbackCandidates.length) {
       console.warn("[getRecommendations] no articles in DB — library will be empty");
       return [];
     }
-
-    return candidates
-      .filter((item) => !historySeen.has(item.id))
-      .slice(0, limit);
+    return fallbackCandidates;
   }
 
   getHistory(limit = 200): ListenHistoryItem[] {
-    return this.db.getHistory(limit);
+    const raw = this.db.getHistory(Math.max(limit * 5, limit));
+    const seen = new Set<string>();
+    const cleaned: ListenHistoryItem[] = [];
+
+    for (const entry of raw) {
+      const recId = String(entry.recommendationId ?? "").trim();
+      const title = String(entry.title ?? "").trim();
+      if (!recId || !title) continue;
+      if (seen.has(recId)) continue;
+      seen.add(recId);
+      cleaned.push(entry);
+      if (cleaned.length >= limit) break;
+    }
+
+    return cleaned;
   }
 
   async trackHistory(input: HistoryTrackInput): Promise<ListenHistoryItem> {
     const manifest = await this.mediaResources.getManifest();
     const imageResource = manifest.defaults.speakerImage || "default.png";
     return this.db.trackHistory(input, imageResource);
+  }
+
+  async trackPreferenceActivity(input: PreferenceActivityInput): Promise<{ ok: boolean; tracked?: ListenHistoryItem }> {
+    const recommendationId = String(input.podcast_id ?? "").trim();
+    if (!recommendationId) {
+      return { ok: false };
+    }
+
+    const progressSeconds = Number(input.last_position ?? input.listen_duration_seconds ?? 0);
+    const durationSeconds = Number(input.total_duration_seconds ?? 0);
+    const tracked = await this.trackHistory({
+      recommendationId,
+      progressSeconds: Number.isFinite(progressSeconds) ? progressSeconds : 0,
+      durationSeconds: Number.isFinite(durationSeconds) && durationSeconds > 0 ? durationSeconds : undefined
+    });
+
+    const actions = Array.isArray(input.actions) ? input.actions : [];
+    const hasLike = actions.some((a) => a.action === "like");
+    const hasDislike = actions.some((a) => a.action === "dislike");
+    if (hasLike && !hasDislike) {
+      this.ratePodcast(recommendationId, 1);
+    } else if (hasDislike && !hasLike) {
+      this.ratePodcast(recommendationId, -1);
+    }
+
+    // Keep this lightweight on every play event; refresh topics periodically.
+    this.preferenceActivityCounter += 1;
+    if (this.preferenceActivityCounter % 5 === 0) {
+      void this.refreshTopicsFromBehavior();
+    }
+
+    return { ok: true, tracked };
   }
 
   getDownloads(limit = 500): DownloadPodcastItem[] {
@@ -656,22 +871,41 @@ export class BriefcastAppService {
     ].join("\n");
   }
 
-  private toLrc(transcript: string): string {
+  private toLrc(transcript: string, estimatedDurationSecs?: number): string {
     const chunks = transcript
       .split(/(?<=[.!?])\s+/)
       .map((line) => line.trim())
       .filter(Boolean);
 
+    if (!chunks.length) return "";
+
+    if (estimatedDurationSecs && estimatedDurationSecs > 0) {
+      // Distribute timestamps proportionally by word count so LRC tracks actual audio speed
+      const wordCounts = chunks.map((c) => c.split(/\s+/).filter(Boolean).length);
+      const totalWords = wordCounts.reduce((a, b) => a + b, 0);
+      if (totalWords === 0) return "";
+
+      let cursor = 0;
+      return chunks
+        .map((line, i) => {
+          const min = Math.floor(cursor / 60).toString().padStart(2, "0");
+          const secWhole = Math.floor(cursor % 60).toString().padStart(2, "0");
+          const secFrac = Math.round((cursor % 1) * 100).toString().padStart(2, "0");
+          const ts = `[${min}:${secWhole}.${secFrac}]`;
+          cursor += (wordCounts[i] / totalWords) * estimatedDurationSecs;
+          return `${ts}${line}`;
+        })
+        .join("\n");
+    }
+
+    // Fallback: estimate at ~3 words/sec (OpenAI nova TTS speed)
     let cursor = 0;
     return chunks
       .map((line) => {
-        const min = Math.floor(cursor / 60)
-          .toString()
-          .padStart(2, "0");
-        const sec = Math.floor(cursor % 60)
-          .toString()
-          .padStart(2, "0");
-        cursor += Math.max(3, Math.min(9, Math.ceil(line.length / 18)));
+        const min = Math.floor(cursor / 60).toString().padStart(2, "0");
+        const sec = Math.floor(cursor % 60).toString().padStart(2, "0");
+        const wordCount = line.split(/\s+/).filter(Boolean).length;
+        cursor += Math.max(1.5, wordCount / 3.0);
         return `[${min}:${sec}.00]${line}`;
       })
       .join("\n");
@@ -691,8 +925,9 @@ export class BriefcastAppService {
 
     const prompt = this.buildTranscriptPrompt(recommendation);
     const transcript = await generateText(this.settings, prompt);
-    const lrc = this.toLrc(transcript);
     const audio = await synthesizeSpeech(this.settings, transcript);
+    const actualDurationSecs = Math.max(2, (audio.buffer.byteLength * 8) / 128000);
+    const lrc = this.toLrc(transcript, actualDurationSecs);
 
     const episode: GeneratedEpisode = {
       recommendationId,
@@ -717,8 +952,17 @@ export class BriefcastAppService {
     recommendation: RecommendationPodcast,
     defaults: { image: string; audio: string; transcript: string },
     listenDuration = 0,
-    favorite = false
+    favorite = false,
+    includeMediaUrls = false // if false, return empty URLs so frontend knows to poll
   ): LegacyPodcast {
+    const isDailyBriefing = recommendation.id.startsWith("daily-");
+    const coverImage =
+      isDailyBriefing
+        ? "image/daily.png"
+        : recommendation.imageUrl && recommendation.imageUrl.trim()
+        ? recommendation.imageUrl
+        : `image/${recommendation.imageResource || defaults.image || "default.png"}`;
+
     return {
       id: recommendation.id,
       title: recommendation.title,
@@ -727,9 +971,9 @@ export class BriefcastAppService {
       duration: this.formatLegacyDuration(recommendation.estimatedDurationSeconds),
       duration_seconds: recommendation.estimatedDurationSeconds,
       listen_duration_seconds: Math.max(0, Math.floor(listenDuration)),
-      image_url: `image/${defaults.image}`,
-      transcript_url: `transcript/${defaults.transcript}`,
-      audio_url: `audio/${defaults.audio}`,
+      image_url: coverImage,
+      transcript_url: includeMediaUrls ? `transcript/${defaults.transcript}` : "",
+      audio_url: includeMediaUrls ? `audio/${defaults.audio}` : "",
       category: recommendation.sourceType,
       subcategory: recommendation.subcategory,
       positive_rating: 0,
@@ -740,6 +984,31 @@ export class BriefcastAppService {
       favorite,
       published_at: recommendation.publishedAt,
       link: recommendation.url
+    };
+  }
+
+  private toLegacyPodcastFromStored(podcast: Podcast): LegacyPodcast {
+    return {
+      id: podcast.id,
+      title: podcast.title,
+      show: podcast.source_name || "BriefCast",
+      episode: podcast.subcategory || "episode",
+      duration: this.formatLegacyDuration(podcast.duration_seconds),
+      duration_seconds: podcast.duration_seconds,
+      listen_duration_seconds: 0,
+      image_url: podcast.image_url || "image/default.png",
+      transcript_url: podcast.transcript_url || "",
+      audio_url: podcast.audio_url || "",
+      category: podcast.subcategory || "general",
+      subcategory: podcast.subcategory || "general",
+      positive_rating: 0,
+      negative_rating: 0,
+      total_rating: podcast.rating ?? 0,
+      createAt: podcast.published_at,
+      added_at: podcast.published_at,
+      favorite: false,
+      published_at: podcast.published_at,
+      link: podcast.link || ""
     };
   }
 
@@ -778,8 +1047,9 @@ export class BriefcastAppService {
   }
 
   async getLegacyTrending(limit = 20): Promise<LegacyPodcast[]> {
-    const recommendations = await this.getLegacyRecommendations(undefined, Math.max(limit * 2, 40));
-    return recommendations.sort((a, b) => b.published_at - a.published_at).slice(0, limit);
+    const defaults = await this.getLegacyDefaults();
+    const trending = await this.getTrending(limit);
+    return trending.map((item) => this.buildLegacyPodcastFromRecommendation(item, defaults));
   }
 
   async getLegacySearch(query: string, limit = 20): Promise<LegacyPodcast[]> {
@@ -797,7 +1067,8 @@ export class BriefcastAppService {
           url: item.url,
           publishedAt: item.publishedAt,
           estimatedDurationSeconds: 180,
-          imageResource: defaults.image
+          imageResource: defaults.image,
+          imageUrl: item.imageUrl,
         },
         defaults
       )
@@ -810,8 +1081,33 @@ export class BriefcastAppService {
     }
 
     const cached = this.legacyPodcastCache.get(podcastId);
-    if (cached) {
+    if (cached && cached.audio_url && cached.transcript_url) {
       return cached;
+    }
+
+    // Daily episodes are keyed as daily-YYYY-MM-DD and may need lazy generation.
+    if (podcastId.startsWith("daily-")) {
+      const todayKey = dateKeyNow();
+      const requestedDateKey = podcastId.slice("daily-".length);
+
+      // Only auto-generate today's daily podcast on demand.
+      if (requestedDateKey === todayKey) {
+        const daily = await this.generateLegacyPodcast(undefined, false);
+        if (daily && daily.id === podcastId) {
+          return daily;
+        }
+      }
+
+      // Historical (or not-yet-generated) daily ids: return from cache if present.
+      return this.legacyPodcastCache.get(podcastId) ?? null;
+    }
+
+    // If already generated before, return persisted media URLs immediately.
+    const stored = this.getPodcastById(podcastId);
+    if (stored && stored.audio_url && stored.transcript_url) {
+      const legacy = this.toLegacyPodcastFromStored(stored);
+      this.legacyPodcastCache.set(podcastId, legacy);
+      return legacy;
     }
 
     const defaults = await this.getLegacyDefaults();
@@ -819,7 +1115,24 @@ export class BriefcastAppService {
     if (!recommendation) {
       return null;
     }
-    return this.buildLegacyPodcastFromRecommendation(recommendation, defaults);
+
+    // Return metadata immediately (audio_url/transcript_url empty) so the client can
+    // display the article card while generation runs in the background — matches Python
+    // backend behavior where /podcast/<id> always returns the current state of the record.
+    const placeholder = this.buildLegacyPodcastFromRecommendation(recommendation, defaults);
+
+    // Kick off audio generation once; client polls until audio_url is populated.
+    void this.generatePodcastAudio(podcastId)
+      .then((generated) => {
+        if (generated.audio_url && generated.transcript_url) {
+          this.legacyPodcastCache.set(podcastId, this.toLegacyPodcastFromStored(generated));
+        }
+      })
+      .catch((err) => {
+        console.error("[getLegacyPodcast] generation failed:", err);
+      });
+
+    return placeholder;
   }
 
   async generateLegacyPodcast(location?: [number, number] | number[], force = false): Promise<LegacyPodcast> {
@@ -843,7 +1156,7 @@ export class BriefcastAppService {
       duration: "2",
       duration_seconds: 120,
       listen_duration_seconds: 0,
-      image_url: `image/${defaults.image}`,
+      image_url: "image/daily.png",
       transcript_url: "",
       audio_url: "",
       category: "general",
@@ -863,7 +1176,8 @@ export class BriefcastAppService {
       this.legacyDailyInFlight.add(cacheKey);
       void (async () => {
         try {
-          const recommendations = await this.getRecommendations(1);
+          const storyCount = Math.max(1, Math.min(20, Math.floor(this.settings.preferences.dailyBriefingCount || 5)));
+          const recommendations = await this.getRecommendations(storyCount);
           if (!recommendations.length) {
             this.legacyDailyCache.set(cacheKey, placeholder);
             return;
@@ -880,7 +1194,7 @@ export class BriefcastAppService {
             duration: this.formatLegacyDuration(durationSeconds),
             duration_seconds: durationSeconds,
             listen_duration_seconds: 0,
-            image_url: top.imageResource ? `image/${top.imageResource}` : `image/${defaults.image}`,
+            image_url: "image/daily.png",
             transcript_url: `transcript/${defaults.transcript}`,
             audio_url: `audio/${defaults.audio}`,
             category: top.sourceType,
@@ -909,18 +1223,95 @@ export class BriefcastAppService {
   }
 
   async getLegacyTransition(id1: string, id2: string): Promise<LegacyPodcast> {
+    console.log("[transition] getLegacyTransition called:", { id1, id2 });
+    const key = `${id1}:${id2}`;
+    const inFlight = this.legacyTransitionInFlight.get(key);
+    if (inFlight) {
+      console.log("[transition] returning in-flight request");
+      return inFlight;
+    }
+
+    const run = this.buildLegacyTransitionPodcast(id1, id2)
+      .then((result) => {
+        console.log("[transition] built transition podcast:", { id: result.id, audio_url: result.audio_url });
+        return result;
+      })
+      .finally(() => {
+        this.legacyTransitionInFlight.delete(key);
+      });
+    this.legacyTransitionInFlight.set(key, run);
+    return run;
+  }
+
+  private async buildLegacyTransitionPodcast(id1: string, id2: string): Promise<LegacyPodcast> {
     const defaults = await this.getLegacyDefaults();
+    const transitionHash = createHash("sha1").update(`${id1}:${id2}`).digest("hex").slice(0, 16);
+    const transcriptFileName = `transition-${transitionHash}.lrc`;
+    const audioFileName = `transition-${transitionHash}.mp3`;
+    const transcriptPath = path.join(this.baseDir, "transcript", transcriptFileName);
+    const audioPath = path.join(this.baseDir, "audio", audioFileName);
+
+    await Promise.all([
+      fs.mkdir(path.dirname(transcriptPath), { recursive: true }),
+      fs.mkdir(path.dirname(audioPath), { recursive: true })
+    ]);
+
+    const imageResource = "host.png";
+    const rec1 = this.db.getRecommendationById(id1, defaults.image);
+    const rec2 = this.db.getRecommendationById(id2, defaults.image);
+    const fromTitle = rec1?.title || "our previous story";
+    const toTitle = rec2?.title || "our next update";
+    const fromSummary = rec1?.summary || "";
+    const toSummary = rec2?.summary || "";
+
+    let transitionText = "";
+    try {
+      transitionText = await generateText(
+        this.settings,
+        [
+          "Write ONLY one short spoken transition that links two news stories.",
+          "Constraints: natural host voice, under 30 words, no labels, no markdown.",
+          `Story 1 title: ${fromTitle}`,
+          `Story 1 context: ${fromSummary}`,
+          `Story 2 title: ${toTitle}`,
+          `Story 2 context: ${toSummary}`
+        ].join("\n")
+      );
+    } catch {
+      transitionText = "";
+    }
+
+    if (!transitionText.trim()) {
+      transitionText = `From ${fromTitle}, let's move to ${toTitle}.`;
+    }
+    const cleaned = transitionText.replace(/\s+/g, " ").trim();
+
+    let durationSeconds = 12;
+    const existingAudio = await this.audioFileExists(`file://${audioPath}`);
+    const existingTranscript = await this.audioFileExists(`file://${transcriptPath}`);
+    if (!existingAudio || !existingTranscript) {
+      // Use "nova" (female) voice for host transitions by default
+      const hostVoice = this.settings.tts.hostVoice || "nova";
+      const speech = await synthesizeSpeech(this.settings, cleaned, hostVoice);
+      await fs.writeFile(audioPath, speech.buffer);
+      // Estimate real audio duration from MP3 bytes at 128 kbps
+      const estimatedSecs = Math.max(2, (speech.buffer.byteLength * 8) / 128000);
+      durationSeconds = Math.round(estimatedSecs);
+      const lrc = this.toLrc(cleaned, estimatedSecs);
+      await fs.writeFile(transcriptPath, lrc, "utf8");
+    }
+
     const transition: LegacyPodcast = {
-      id: "",
+      id: `transition-${transitionHash}`,
       title: "Sofia Lane",
       show: "BriefCast",
       episode: `${id1}-${id2}`,
-      duration: "1",
-      duration_seconds: 15,
+      duration: this.formatLegacyDuration(durationSeconds),
+      duration_seconds: durationSeconds,
       listen_duration_seconds: 0,
-      image_url: `image/${defaults.image}`,
-      transcript_url: `transcript/${defaults.transcript}`,
-      audio_url: `audio/${defaults.audio}`,
+      image_url: `image/${imageResource}`,
+      transcript_url: `transcript/${transcriptFileName}`,
+      audio_url: `audio/${audioFileName}`,
       category: "transition",
       subcategory: "transition",
       positive_rating: 0,
@@ -930,46 +1321,106 @@ export class BriefcastAppService {
       added_at: Date.now(),
       favorite: false,
       published_at: Date.now(),
-      link: ""
+      link: "",
+      text: cleaned
     };
     return transition;
+  }
+
+  async readLegacyAssetBuffer(kind: "image" | "audio" | "transcript", fileName: string): Promise<{ mimeType: string; buffer: Buffer }> {
+    const cleaned = path.basename(fileName);
+    if (!cleaned) {
+      throw new Error("Invalid file name");
+    }
+    if (kind === "image") {
+      const resource = await this.readMediaResourceBuffer(cleaned);
+      return { mimeType: resource.mimeType, buffer: resource.buffer };
+    }
+
+    const fullPath = path.join(this.baseDir, kind, cleaned);
+    try {
+      const buffer = await fs.readFile(fullPath);
+      const ext = path.extname(cleaned).toLowerCase();
+      const mimeType =
+        kind === "audio"
+          ? (ext === ".wav" ? "audio/wav" : ext === ".ogg" ? "audio/ogg" : "audio/mpeg")
+          : "text/plain; charset=utf-8";
+      return { mimeType, buffer };
+    } catch {
+      const resource = await this.readMediaResourceBuffer(cleaned);
+      return { mimeType: resource.mimeType, buffer: resource.buffer };
+    }
   }
 
   async getLegacySummary(pids: string[]): Promise<LegacyPodcast> {
     const defaults = await this.getLegacyDefaults();
     const title = pids.length ? `Summary: ${pids.length} Stories` : "Summary Podcast";
-    const summary: LegacyPodcast = {
-      id: `summary-${randomUUID()}`,
-      title,
-      show: "BriefCast",
-      episode: "summary",
-      duration: "3",
-      duration_seconds: 180,
-      listen_duration_seconds: 0,
-      image_url: "image/summary.png",
-      transcript_url: `transcript/${defaults.transcript}`,
-      audio_url: `audio/${defaults.audio}`,
-      category: "summary",
-      subcategory: "summary",
-      positive_rating: 0,
-      negative_rating: 0,
-      total_rating: 0,
-      createAt: Date.now(),
-      added_at: Date.now(),
-      favorite: false,
-      published_at: Date.now(),
-      link: ""
-    };
-    this.legacyPodcastCache.set(summary.id, summary);
-    return summary;
+
+    try {
+      const generated = await this.generateSummaryPodcast(pids);
+      const summary: LegacyPodcast = {
+        id: generated.id,
+        title: generated.title || title,
+        show: "BriefCast",
+        episode: "summary",
+        duration: this.formatLegacyDuration(generated.duration_seconds || 180),
+        duration_seconds: generated.duration_seconds || 180,
+        listen_duration_seconds: 0,
+        image_url: "image/summary.png",
+        transcript_url: generated.transcript_url || `transcript/${defaults.transcript}`,
+        audio_url: generated.audio_url || `audio/${defaults.audio}`,
+        category: "summary",
+        subcategory: "summary",
+        positive_rating: 0,
+        negative_rating: 0,
+        total_rating: 0,
+        createAt: Date.now(),
+        added_at: Date.now(),
+        favorite: false,
+        published_at: generated.published_at || Date.now(),
+        link: ""
+      };
+      this.legacyPodcastCache.set(summary.id, summary);
+      return summary;
+    } catch {
+      const summary: LegacyPodcast = {
+        id: `summary-${randomUUID()}`,
+        title,
+        show: "BriefCast",
+        episode: "summary",
+        duration: "3",
+        duration_seconds: 180,
+        listen_duration_seconds: 0,
+        image_url: "image/summary.png",
+        transcript_url: `transcript/${defaults.transcript}`,
+        audio_url: `audio/${defaults.audio}`,
+        category: "summary",
+        subcategory: "summary",
+        positive_rating: 0,
+        negative_rating: 0,
+        total_rating: 0,
+        createAt: Date.now(),
+        added_at: Date.now(),
+        favorite: false,
+        published_at: Date.now(),
+        link: ""
+      };
+      this.legacyPodcastCache.set(summary.id, summary);
+      return summary;
+    }
   }
 
   async getLegacyHistory(limit = 100): Promise<Array<Record<string, unknown>>> {
     const defaults = await this.getLegacyDefaults();
-    const history = this.db.getHistory(limit);
+    const history = this.getHistory(limit);
     return history.map((entry) => ({
-      id: entry.recommendationId,
-      image_url: `image/${entry.imageResource || defaults.image}`,
+      id: entry.id,
+      recommendation_id: entry.recommendationId,
+      image_url: String(entry.recommendationId).startsWith("daily-")
+        ? "image/daily.png"
+        : entry.imageUrl && entry.imageUrl.trim()
+          ? entry.imageUrl
+          : `image/${entry.imageResource || defaults.image}`,
       title: entry.title,
       subcategory: entry.subcategory,
       listen_duration_seconds: entry.progressSeconds,
@@ -986,6 +1437,19 @@ export class BriefcastAppService {
       position: Number.isFinite(position) ? position : 0,
       updatedAt: Date.now()
     });
+    if (podcastId) {
+      try {
+        const resolvedPosition = Number.isFinite(position) ? Math.max(0, Math.floor(position)) : 0;
+        const podcast = this.getPodcastById(podcastId);
+        await this.trackHistory({
+          recommendationId: podcastId,
+          progressSeconds: resolvedPosition,
+          durationSeconds: podcast?.duration_seconds
+        });
+      } catch {
+        // Keep /playing lightweight and never fail caller because history write failed.
+      }
+    }
     return { ok: true };
   }
 
@@ -1169,6 +1633,7 @@ export class BriefcastAppService {
         topics: this.settings.preferences.topics,
         region: this.settings.preferences.region,
         language: this.settings.preferences.language,
+        dailyBriefingCount: this.settings.preferences.dailyBriefingCount,
       },
     };
   }
@@ -1177,6 +1642,12 @@ export class BriefcastAppService {
     if (prefs.topics !== undefined) this.settings.preferences.topics = prefs.topics;
     if (prefs.region !== undefined) this.settings.preferences.region = prefs.region;
     if (prefs.language !== undefined) this.settings.preferences.language = prefs.language;
+    if (prefs.dailyBriefingCount !== undefined) {
+      const n = Number(prefs.dailyBriefingCount);
+      if (Number.isFinite(n)) {
+        this.settings.preferences.dailyBriefingCount = Math.max(1, Math.min(20, Math.floor(n)));
+      }
+    }
     this.configStore.save(this.settings);
     return this.getUserProfile();
   }
@@ -1184,11 +1655,76 @@ export class BriefcastAppService {
   // ── Trending ─────────────────────────────────────────────────────────────
 
   async getTrending(limit = 20): Promise<RecommendationPodcast[]> {
-    const all = await this.getRecommendations(limit * 3);
-    // Sort by publishedAt descending (newest = "trending")
-    return all
+    const now = Date.now();
+    if (now - this._trendingCache.ts < BriefcastAppService.TRENDING_TTL_MS && this._trendingCache.items.length) {
+      return this._trendingCache.items.slice(0, limit);
+    }
+
+    let imageResource = "default.png";
+    try {
+      const manifest = await this.mediaResources.getManifest();
+      imageResource = manifest.defaults.speakerImage || "default.png";
+    } catch { /* use default */ }
+
+    const embeddingModel =
+      this.settings.providers.activeProvider === "openai-compatible"
+        ? this.settings.providers.openaiCompatible.embeddingModel || "local-hash-v1"
+        : "local-hash-v1";
+
+    // Exclude items already in history (listened, used in daily/summary)
+    const historySeen = new Set(this.db.getHistory(600).map((item) => item.recommendationId));
+
+    try {
+      const headlines = await Promise.race([
+        fetchTopHeadlines(limit * 3), // fetch more to account for filtering
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("headlines timeout")), 8000))
+      ]);
+
+      const fresh: RecommendationPodcast[] = [];
+      for (const h of headlines) {
+        // Upsert into DB so podcast generation can find it later
+        if (!this.db.articleExistsByUrl(h.url)) {
+          const searchable = `${h.title}\n${h.summary}\n${h.content}`.trim();
+          if (searchable.length >= 12) {
+            const vector = await embedText(this.settings, searchable);
+            this.db.upsertArticle(h, vector, embeddingModel);
+          }
+        }
+        const id = this.db.getArticleIdByUrl(h.url);
+        if (!id) continue;
+        // Skip if already in history
+        if (historySeen.has(id)) continue;
+        fresh.push({
+          id,
+          title: h.title,
+          subcategory: h.sourceName,
+          sourceName: h.sourceName,
+          sourceType: h.sourceType,
+          summary: h.summary || h.content || h.title,
+          url: h.url,
+          publishedAt: h.publishedAt,
+          estimatedDurationSeconds: 180,
+          imageResource,
+          imageUrl: h.imageUrl,
+        });
+        if (fresh.length >= limit) break;
+      }
+
+      if (fresh.length) {
+        this._trendingCache = { ts: now, items: fresh };
+        return fresh;
+      }
+    } catch (err) {
+      console.warn("[getTrending] live headline fetch failed, falling back to recent articles:", err instanceof Error ? err.message : err);
+    }
+
+    // Fallback: most recent articles from DB, excluding history
+    const fallback = this.db.getRecommendations(limit * 3, imageResource)
+      .filter((item) => !historySeen.has(item.id))
       .sort((a, b) => b.publishedAt - a.publishedAt)
       .slice(0, limit);
+    this._trendingCache = { ts: now, items: fallback };
+    return fallback;
   }
 
   // ── Playlists ────────────────────────────────────────────────────────────
@@ -1248,50 +1784,72 @@ export class BriefcastAppService {
   }
 
   async generatePodcastAudio(recommendationId: string): Promise<Podcast> {
-    const cached = this.podcastCache.get(recommendationId);
-    if (cached && cached.audio_url) return cached;
+    const cached = this.podcastCache.get(recommendationId) ?? this.db.getPodcastById(recommendationId);
+    if (cached && cached.audio_url && cached.transcript_url) {
+      this.podcastCache.set(recommendationId, cached);
+      return cached;
+    }
 
-    const manifest = await this.mediaResources.getManifest();
-    const imageResource = manifest.defaults.speakerImage || "default.png";
-    const rec = this.db.getRecommendationById(recommendationId, imageResource);
-    if (!rec) throw new Error(`Recommendation not found: ${recommendationId}`);
+    const inFlight = this.podcastGenerationInFlight.get(recommendationId);
+    if (inFlight) return inFlight;
 
-    const newsImagePath = path.join(manifest.resourceDir, "news.png");
-    const imageUrl = rec.imageUrl ?? `file://${newsImagePath}`;
+    const task = this.podcastGenerationQueue.then(async () => {
+      const recheck = this.podcastCache.get(recommendationId) ?? this.db.getPodcastById(recommendationId);
+      if (recheck && recheck.audio_url && recheck.transcript_url) {
+        this.podcastCache.set(recommendationId, recheck);
+        return recheck;
+      }
 
-    // Generate via pipeline (single article)
-    const pipeline = await generateDailyPodcast({
-      baseDir: this.baseDir,
-      resourceDir: manifest.resourceDir,
-      settings: this.settings,
-      articles: [{
-        id: rec.id,
+      const manifest = await this.mediaResources.getManifest();
+      const imageResource = manifest.defaults.speakerImage || "default.png";
+      const rec = this.db.getRecommendationById(recommendationId, imageResource);
+      if (!rec) throw new Error(`Recommendation not found: ${recommendationId}`);
+
+      const defaultImagePath = path.join(manifest.resourceDir, "default.png");
+      const imageUrl = rec.imageUrl || `file://${defaultImagePath}`;
+
+      // Generate via pipeline (single article, no intro/outro)
+      const pipeline = await generateDailyPodcast({
+        baseDir: this.baseDir,
+        resourceDir: manifest.resourceDir,
+        settings: this.settings,
+        articles: [{
+          id: rec.id,
+          title: rec.title,
+          summary: rec.summary,
+          sourceName: rec.sourceName,
+          url: rec.url,
+          publishedAt: rec.publishedAt,
+        }],
         title: rec.title,
-        summary: rec.summary,
-        sourceName: rec.sourceName,
-        url: rec.url,
-        publishedAt: rec.publishedAt,
-      }],
-      title: rec.title,
+        skipIntroOutro: true,
+      });
+
+      const podcast: Podcast = {
+        id: recommendationId,
+        title: rec.title,
+        subcategory: rec.subcategory,
+        source_name: rec.sourceName,
+        image_url: imageUrl,
+        audio_url: `file://${pipeline.audioPath}`,
+        transcript_url: `file://${pipeline.lrcPath}`,
+        duration_seconds: pipeline.durationSeconds,
+        published_at: rec.publishedAt,
+        link: rec.url,
+        rating: 0,
+      };
+
+      this.db.savePodcast(podcast);
+      this.podcastCache.set(recommendationId, podcast);
+      return podcast;
     });
 
-    const podcast: Podcast = {
-      id: recommendationId,
-      title: rec.title,
-      subcategory: rec.subcategory,
-      source_name: rec.sourceName,
-      image_url: imageUrl,
-      audio_url: `file://${pipeline.audioPath}`,
-      transcript_url: `file://${pipeline.lrcPath}`,
-      duration_seconds: pipeline.durationSeconds,
-      published_at: rec.publishedAt,
-      link: rec.url,
-      rating: 0,
-    };
-
-    this.db.savePodcast(podcast);
-    this.podcastCache.set(recommendationId, podcast);
-    return podcast;
+    const guardedTask = task.finally(() => {
+      this.podcastGenerationInFlight.delete(recommendationId);
+    });
+    this.podcastGenerationInFlight.set(recommendationId, guardedTask);
+    this.podcastGenerationQueue = guardedTask.then(() => undefined, () => undefined);
+    return guardedTask;
   }
 
   private async audioFileExists(audioUrl: string): Promise<boolean> {
@@ -1309,6 +1867,12 @@ export class BriefcastAppService {
     const cacheKey = `daily-${today}`;
     const existing = this.podcastCache.get(cacheKey) ?? this.db.getDailyPodcast(today);
     if (existing && existing.audio_url && await this.audioFileExists(existing.audio_url)) {
+      // Use relative path so browser can load via HTTP (not file://)
+      const normalizedDailyImage = "image/daily.png";
+      if (existing.image_url !== normalizedDailyImage) {
+        existing.image_url = normalizedDailyImage;
+        this.db.savePodcast(existing);
+      }
       console.log("[getDailyPodcast] returning cached daily podcast:", cacheKey);
       this.podcastCache.set(cacheKey, existing);
       return existing;
@@ -1332,7 +1896,8 @@ export class BriefcastAppService {
     if (!recs.length) throw new Error("No valid articles found for summary");
 
     const summaryManifest = await this.mediaResources.getManifest();
-    const summaryImagePath = path.join(summaryManifest.resourceDir, "summary.png");
+    // Use relative path so browser can load via HTTP (not file://)
+    const summaryImage = "image/summary.png";
 
     const pipeline = await generateDailyPodcast({
       baseDir: this.baseDir,
@@ -1341,6 +1906,7 @@ export class BriefcastAppService {
       articles: recs,
       title: `Summary: ${recs.length} Stories`,
       isSummary: true,
+      skipIntroOutro: true,
     });
 
     const summaryId = `summary-${pipeline.id}`;
@@ -1349,7 +1915,7 @@ export class BriefcastAppService {
       title: pipeline.title,
       subcategory: "News Summary",
       source_name: "BriefCast",
-      image_url: `file://${summaryImagePath}`,
+      image_url: summaryImage,
       audio_url: `file://${pipeline.audioPath}`,
       transcript_url: `file://${pipeline.lrcPath}`,
       duration_seconds: pipeline.durationSeconds,
@@ -1360,79 +1926,113 @@ export class BriefcastAppService {
 
     this.db.savePodcast(podcast);
     this.podcastCache.set(summaryId, podcast);
+
+    // Mark all used articles as "listened" so they don't appear in recommendations again
+    for (const rec of recs) {
+      try {
+        await this.trackHistory({
+          recommendationId: rec.id,
+          progressSeconds: 0,
+          durationSeconds: 180 // estimated
+        });
+      } catch {
+        // Ignore errors - history tracking is not critical
+      }
+    }
+    console.log(`[generateSummaryPodcast] marked ${recs.length} articles as used`);
+
     return podcast;
   }
 
   async forceDailyPodcast(): Promise<Podcast | null> {
-    // Clear the in-memory cache for today so getDailyPodcast() regenerates unconditionally
     const today = new Date().toISOString().slice(0, 10);
     const cacheKey = `daily-${today}`;
     this.podcastCache.delete(cacheKey);
-    this.dailyInFlight = false;
-    this.currentDailyDateKey = "";
+    // Cancel any running generation so force always starts fresh
+    this._dailyPodcastPromise = null;
+    this._dailyPodcastDateKey = "";
     return this.generateDailyPodcastInternal();
   }
 
-  private async generateDailyPodcastInternal(): Promise<Podcast | null> {
+  private generateDailyPodcastInternal(): Promise<Podcast | null> {
     const today = new Date().toISOString().slice(0, 10);
-    const cacheKey = `daily-${today}`;
 
-    if (this.dailyInFlight && this.currentDailyDateKey === today) {
-      console.log("[generateDailyPodcastInternal] generation already in flight");
-      return null;
+    // Return the existing in-flight promise — prevents concurrent duplicate runs
+    if (this._dailyPodcastPromise && this._dailyPodcastDateKey === today) {
+      console.log("[generateDailyPodcastInternal] generation already in flight, joining");
+      return this._dailyPodcastPromise;
     }
 
+    // Assign synchronously before any await so all concurrent callers see it immediately
+    this._dailyPodcastDateKey = today;
+    this._dailyPodcastPromise = this._runDailyPodcastGeneration(today).finally(() => {
+      this._dailyPodcastPromise = null;
+    });
+    return this._dailyPodcastPromise;
+  }
+
+  private async _runDailyPodcastGeneration(today: string): Promise<Podcast | null> {
+    const cacheKey = `daily-${today}`;
+
     await this.ensureSeedNews();
-    const recs = await this.getRecommendations(5);
+    const storyCount = Math.max(1, Math.min(20, Math.floor(this.settings.preferences.dailyBriefingCount || 5)));
+    const recs = await this.getRecommendations(storyCount);
     if (!recs.length) {
       console.warn("[generateDailyPodcastInternal] no recommendations — cannot generate");
       return null;
     }
 
-    this.dailyInFlight = true;
-    this.currentDailyDateKey = today;
-
     const manifest = await this.mediaResources.getManifest();
-    const dailyImagePath = path.join(manifest.resourceDir, "daily.png");
-    const coverImage = recs[0].imageUrl ?? `file://${dailyImagePath}`;
+    // Use relative path so browser can load via HTTP (not file://)
+    const coverImage = "image/daily.png";
     const location = await getIpLocation();
 
-    try {
-      const pipeline = await generateDailyPodcast({
-        baseDir: this.baseDir,
-        resourceDir: manifest.resourceDir,
-        settings: this.settings,
-        location: location ?? undefined,
-        articles: recs.map((r) => ({
-          id: r.id,
-          title: r.title,
-          summary: r.summary,
-          sourceName: r.sourceName,
-          url: r.url,
-          publishedAt: r.publishedAt,
-        })),
-      });
+    const pipeline = await generateDailyPodcast({
+      baseDir: this.baseDir,
+      resourceDir: manifest.resourceDir,
+      settings: this.settings,
+      location: location ?? undefined,
+      articles: recs.map((r) => ({
+        id: r.id,
+        title: r.title,
+        summary: r.summary,
+        sourceName: r.sourceName,
+        url: r.url,
+        publishedAt: r.publishedAt,
+      })),
+    });
 
-      const podcast: Podcast = {
-        id: cacheKey,
-        title: pipeline.title,
-        subcategory: "Daily Briefing",
-        source_name: "BriefCast",
-        image_url: coverImage,
-        audio_url: `file://${pipeline.audioPath}`,
-        transcript_url: `file://${pipeline.lrcPath}`,
-        duration_seconds: pipeline.durationSeconds,
-        published_at: pipeline.publishedAt,
-        link: "",
-        is_daily: true,
-      };
+    const podcast: Podcast = {
+      id: cacheKey,
+      title: pipeline.title,
+      subcategory: "Daily Briefing",
+      source_name: "BriefCast",
+      image_url: coverImage,
+      audio_url: `file://${pipeline.audioPath}`,
+      transcript_url: `file://${pipeline.lrcPath}`,
+      duration_seconds: pipeline.durationSeconds,
+      published_at: pipeline.publishedAt,
+      link: "",
+      is_daily: true,
+    };
 
-      this.db.savePodcast(podcast);
-      this.podcastCache.set(cacheKey, podcast);
-      return podcast;
-    } finally {
-      this.dailyInFlight = false;
+    this.db.savePodcast(podcast);
+    this.podcastCache.set(cacheKey, podcast);
+
+    // Mark all used articles as "listened" so they don't appear in recommendations again
+    for (const rec of recs) {
+      try {
+        await this.trackHistory({
+          recommendationId: rec.id,
+          progressSeconds: 0,
+          durationSeconds: rec.estimatedDurationSeconds
+        });
+      } catch {
+        // Ignore errors - history tracking is not critical
+      }
     }
+    console.log(`[generateDailyPodcast] marked ${recs.length} articles as used`);
+    return podcast;
   }
 
   async cleanupOldPodcastFiles(maxAgeMs = 30 * 24 * 60 * 60 * 1000): Promise<void> {

@@ -75,14 +75,43 @@ function firstFromList(value: unknown): string | undefined {
   return undefined;
 }
 
-function extractImageFromHtml(html?: string): string | undefined {
+function extractImageFromHtml(html?: string, baseUrl?: string): string | undefined {
   if (!html) return undefined;
-  const og = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);
-  if (og?.[1] && isHttpUrl(og[1])) return og[1];
-  const twitter = html.match(/<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i);
-  if (twitter?.[1] && isHttpUrl(twitter[1])) return twitter[1];
+
+  function resolveUrl(raw: string): string | undefined {
+    if (isHttpUrl(raw)) return raw;
+    if (!baseUrl) return undefined;
+    try { return new URL(raw, baseUrl).href; } catch { return undefined; }
+  }
+
+  // og:image - handle both attribute orderings:
+  //   <meta property="og:image" content="...">
+  //   <meta content="..." property="og:image">
+  const ogPatterns = [
+    /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
+  ];
+  for (const pattern of ogPatterns) {
+    const m = html.match(pattern);
+    if (m?.[1]) { const r = resolveUrl(m[1]); if (r) return r; }
+  }
+
+  // twitter:image - handle both attribute orderings
+  const twitterPatterns = [
+    /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+name=["']twitter:image["']/i,
+    /<meta[^>]+property=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
+    /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']twitter:image["']/i,
+  ];
+  for (const pattern of twitterPatterns) {
+    const m = html.match(pattern);
+    if (m?.[1]) { const r = resolveUrl(m[1]); if (r) return r; }
+  }
+
+  // Fallback: first <img> with resolvable URL
   const img = html.match(/<img[^>]+src=["']([^"']+)["']/i);
-  if (img?.[1] && isHttpUrl(img[1])) return img[1];
+  if (img?.[1]) { const r = resolveUrl(img[1]); if (r) return r; }
+
   return undefined;
 }
 
@@ -256,55 +285,161 @@ export async function fetchReddit(subreddits: string[], perSubreddit = 20): Prom
   return all;
 }
 
-// ── Article image scraping ─────────────────────────────────────────────────────
-// Concurrency limit for scraping article pages to extract og:image
-const IMAGE_SCRAPE_CONCURRENCY = 5;
+// ── Article page scraping ──────────────────────────────────────────────────────
+const PAGE_SCRAPE_CONCURRENCY = 5;
+const SCRAPE_READ_LIMIT = 150_000; // 150KB — enough for any news article
 
-/** Fetch the article page and extract og:image / twitter:image from the HTML. */
-async function scrapeArticleImage(url: string): Promise<string | undefined> {
+interface ScrapedPage {
+  image?: string;
+  content?: string;
+}
+
+/** Fetch an article page and extract og:image + readable body text. */
+async function scrapeArticlePage(url: string): Promise<ScrapedPage> {
   try {
     const res = await fetch(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (compatible; BriefCastBot/1.0)",
-        "Accept": "text/html"
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-US,en;q=0.9"
       },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) return undefined;
-    // Only read first 20KB — og:image is always in <head>
+    if (!res.ok) return {};
+
     const reader = res.body?.getReader();
-    if (!reader) return undefined;
-    let html = "";
-    while (html.length < 20000) {
+    if (!reader) return {};
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    while (totalBytes < SCRAPE_READ_LIMIT) {
       const { done, value } = await reader.read();
       if (done) break;
-      html += new TextDecoder().decode(value);
+      chunks.push(value);
+      totalBytes += value.length;
     }
     reader.cancel().catch(() => {});
-    return extractImageFromHtml(html);
+
+    const html = new TextDecoder().decode(
+      chunks.reduce((a, b) => { const c = new Uint8Array(a.length + b.length); c.set(a); c.set(b, a.length); return c; }, new Uint8Array())
+    );
+
+    const image = extractImageFromHtml(html, url);
+    const content = extractArticleText(html);
+    return { image, content };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
 /**
- * For articles that have no imageUrl, attempt to scrape one from the article page.
- * Runs up to IMAGE_SCRAPE_CONCURRENCY fetches in parallel.
+ * Extract the main article text from raw HTML using heuristics.
+ * Targets common article container selectors before falling back to <body>.
+ */
+function extractArticleText(html: string): string | undefined {
+  // Strip script/style/nav/header/footer noise
+  const stripped = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<nav[\s\S]*?<\/nav>/gi, " ")
+    .replace(/<header[\s\S]*?<\/header>/gi, " ")
+    .replace(/<footer[\s\S]*?<\/footer>/gi, " ")
+    .replace(/<aside[\s\S]*?<\/aside>/gi, " ")
+    .replace(/<figure[\s\S]*?<\/figure>/gi, " ");
+
+  // Try known article container patterns
+  const containerPatterns = [
+    /<article[^>]*>([\s\S]*?)<\/article>/i,
+    /class="[^"]*(?:article[-_]body|story[-_]body|post[-_]content|entry[-_]content|article[-_]content|main[-_]content)[^"]*"[^>]*>([\s\S]*?)<\/(?:div|section|article)>/i,
+    /<main[^>]*>([\s\S]*?)<\/main>/i,
+  ];
+
+  let best = "";
+  for (const pattern of containerPatterns) {
+    const m = stripped.match(pattern);
+    if (m) {
+      const text = htmlToText(m[1] ?? m[0]);
+      if (text.length > best.length) best = text;
+    }
+  }
+
+  // Fallback: strip all tags from body
+  if (best.length < 200) {
+    const bodyMatch = stripped.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    if (bodyMatch) best = htmlToText(bodyMatch[1]);
+  }
+
+  const trimmed = best.trim();
+  // Require at least 100 words to count as real article content
+  return trimmed.split(/\s+/).length >= 100 ? trimmed.slice(0, 8000) : undefined;
+}
+
+function htmlToText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s{3,}/g, "\n\n")
+    .trim();
+}
+
+/**
+ * Enrich articles: fill missing imageUrl AND extract full article content.
+ * Skips articles that already have both. Runs PAGE_SCRAPE_CONCURRENCY fetches in parallel.
  */
 export async function enrichWithArticleImages(articles: IngestArticle[]): Promise<IngestArticle[]> {
-  const missing = articles.filter((a) => !a.imageUrl);
-  console.log(`[enrichImages] scraping images for ${missing.length}/${articles.length} articles without images`);
+  const needsImage = articles.filter((a) => !a.imageUrl);
+  const needsContent = articles.filter((a) => !a.content || a.content.length < 200);
+  const needsScrape = articles.filter((a) => !a.imageUrl || !a.content || a.content.length < 200);
+  
+  console.log(`[enrichArticles] ${articles.length} articles total — need image:${needsImage.length} need content:${needsContent.length} will scrape:${needsScrape.length}`);
 
-  // Process in batches
-  for (let i = 0; i < missing.length; i += IMAGE_SCRAPE_CONCURRENCY) {
-    const batch = missing.slice(i, i + IMAGE_SCRAPE_CONCURRENCY);
-    await Promise.all(
+  let imagesFound = 0;
+  let contentFound = 0;
+  let scrapeErrors = 0;
+
+  for (let i = 0; i < needsScrape.length; i += PAGE_SCRAPE_CONCURRENCY) {
+    const batch = needsScrape.slice(i, i + PAGE_SCRAPE_CONCURRENCY);
+    const results = await Promise.allSettled(
       batch.map(async (article) => {
-        const img = await scrapeArticleImage(article.url);
-        if (img) article.imageUrl = img;
+        const scraped = await scrapeArticlePage(article.url);
+        let image = false;
+        let content = false;
+        if (scraped.image && !article.imageUrl) {
+          article.imageUrl = scraped.image;
+          image = true;
+        }
+        if (scraped.content && (!article.content || article.content.length < 200)) {
+          article.content = scraped.content;
+          content = true;
+        }
+        return { image, content };
       })
     );
+    
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        if (r.value.image) imagesFound++;
+        if (r.value.content) contentFound++;
+      } else {
+        scrapeErrors++;
+      }
+    }
+    
+    // Progress log every 50 articles
+    if ((i + PAGE_SCRAPE_CONCURRENCY) % 50 === 0 || i + PAGE_SCRAPE_CONCURRENCY >= needsScrape.length) {
+      console.log(`[enrichArticles] progress: ${Math.min(i + PAGE_SCRAPE_CONCURRENCY, needsScrape.length)}/${needsScrape.length} — images:${imagesFound} content:${contentFound} errors:${scrapeErrors}`);
+    }
   }
+
+  const finalWithImages = articles.filter((a) => a.imageUrl).length;
+  console.log(`[enrichArticles] done — ${finalWithImages}/${articles.length} articles have images (scraped ${imagesFound} new)`);
 
   return articles;
 }
@@ -492,4 +627,41 @@ export function dedupeArticles(articles: IngestArticle[]): IngestArticle[] {
   }
 
   return out;
+}
+
+// ── Top Headlines ──────────────────────────────────────────────────────────────
+// Fetches real front-page headlines from major news outlets (BBC, Reuters, AP, NPR, etc.)
+// These are the stories that would appear on the first page of CNN/BBC/Reuters.
+
+const HEADLINE_FEEDS: Array<{ url: string; name: string }> = [
+  { url: "https://feeds.bbci.co.uk/news/rss.xml", name: "BBC News" },
+  { url: "https://feeds.reuters.com/reuters/topNews", name: "Reuters" },
+  { url: "https://feeds.npr.org/1001/rss.xml", name: "NPR News" },
+  { url: "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml", name: "NYT" },
+  { url: "https://www.theguardian.com/world/rss", name: "The Guardian" },
+  { url: "https://feeds.skynews.com/feeds/rss/home.xml", name: "Sky News" },
+  { url: "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en", name: "Google News Top Stories" },
+];
+
+/**
+ * Fetch front-page headlines from major outlets.
+ * These are the stories a typical news reader would see on CNN/BBC/Reuters today.
+ */
+export async function fetchTopHeadlines(limit = 30): Promise<IngestArticle[]> {
+  const results = await Promise.allSettled(
+    HEADLINE_FEEDS.map(async ({ url, name }) => {
+      const articles = await fetchOneFeed(url, Math.ceil(limit / HEADLINE_FEEDS.length) + 3);
+      return articles.map((a) => ({ ...a, sourceType: "rss" as const, sourceName: name }));
+    })
+  );
+
+  const all: IngestArticle[] = [];
+  for (const r of results) {
+    if (r.status === "fulfilled") all.push(...r.value);
+  }
+
+  // Sort by newest first, dedupe, cap
+  return dedupeArticles(all)
+    .sort((a, b) => b.publishedAt - a.publishedAt)
+    .slice(0, limit);
 }

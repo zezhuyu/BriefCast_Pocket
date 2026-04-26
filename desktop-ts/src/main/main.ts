@@ -33,7 +33,8 @@ function loadEnvironmentFile(): void {
 
 loadEnvironmentFile();
 
-const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
+const frontendDevServerUrl = process.env.FRONTEND_DEV_SERVER_URL || process.env.VITE_DEV_SERVER_URL;
+const isDev = Boolean(frontendDevServerUrl);
 let mainWindow: BrowserWindow | null = null;
 let service: BriefcastAppService;
 let apiBridge: ApiBridgeServer | null = null;
@@ -89,7 +90,7 @@ async function createWindow(): Promise<void> {
   });
 
   if (isDev) {
-    const devUrl = process.env.VITE_DEV_SERVER_URL as string;
+    const devUrl = frontendDevServerUrl as string;
     try {
       await loadDevUrlWithRetry(mainWindow, devUrl);
     } catch {
@@ -100,12 +101,13 @@ async function createWindow(): Promise<void> {
       );
     }
   } else {
-    await mainWindow.loadFile(path.join(__dirname, "../dist-renderer/index.html"));
+    await mainWindow.loadFile(path.join(__dirname, "../frontend/out/index.html"));
   }
 }
 
 function scheduleNewsSyncEvery6Hours(svc: BriefcastAppService): void {
   const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+  const ONE_HOUR_MS = 60 * 60 * 1000;
 
   async function runSync(): Promise<void> {
     console.log("[news-scheduler] running 6-hour news sync + embed…");
@@ -117,11 +119,35 @@ function scheduleNewsSyncEvery6Hours(svc: BriefcastAppService): void {
     }
   }
 
-  // Initial sync 30 seconds after startup so the app is fully ready
-  setTimeout(runSync, 30_000);
+  async function runImageBackfill(): Promise<void> {
+    console.log("[news-scheduler] backfilling missing images…");
+    try {
+      const updated = await svc.backfillMissingImages(100);
+      console.log(`[news-scheduler] image backfill done — updated:${updated}`);
+    } catch (err) {
+      console.error("[news-scheduler] image backfill failed:", err);
+    }
+  }
 
-  // Then every 6 hours
+  // On startup: only run an immediate sync if it has been ≥6 hours since the
+  // last completed sync (or if there has never been one). Otherwise schedule
+  // the next sync for the remaining time so restarts don't reset the interval.
+  const lastSync = svc.getLastSyncTime();
+  const elapsed = Date.now() - lastSync;
+  const startupDelay = elapsed >= SIX_HOURS_MS
+    ? 30_000                        // overdue — sync soon after boot
+    : SIX_HOURS_MS - elapsed;       // not yet due — wait out the remainder
+  console.log(`[news-scheduler] next startup sync in ${Math.round(startupDelay / 60000)} min (last sync ${Math.round(elapsed / 60000)} min ago)`);
+  setTimeout(runSync, startupDelay);
+
+  // Image backfill 2 minutes after startup (give sync time to finish)
+  setTimeout(runImageBackfill, 120_000);
+
+  // Then repeat every 6 hours for news sync
   setInterval(runSync, SIX_HOURS_MS);
+
+  // Image backfill every hour to gradually fill in missing images
+  setInterval(runImageBackfill, ONE_HOUR_MS);
 }
 
 function scheduleDailyGeneration(svc: BriefcastAppService): void {
@@ -167,7 +193,11 @@ function scheduleDailyGeneration(svc: BriefcastAppService): void {
 function registerIpcHandlers(): void {
   // ── Settings ──────────────────────────────────────────────────────────────
   ipcMain.handle("settings:get", () => service.getSettings());
-  ipcMain.handle("settings:save", (_e, s: AppSettings) => service.saveSettings(s));
+  ipcMain.handle("settings:save", (_e, s: AppSettings) => {
+    const saved = service.saveSettings(s);
+    BrowserWindow.getAllWindows().forEach((w) => w.webContents.send("settings:changed", saved));
+    return saved;
+  });
 
   // ── News ──────────────────────────────────────────────────────────────────
   ipcMain.handle("news:sync", () => service.syncNews());

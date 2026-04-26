@@ -6,21 +6,15 @@
   "main": "dist-electron/main.cjs",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"npm:dev:main\" \"npm:dev:renderer\" \"npm:dev:electron\"",
-    "dev:main": "tsup src/main/main.ts src/main/preload.ts --format cjs --external electron --out-dir dist-electron --watch",
-    "dev:renderer": "vite --host 127.0.0.1 --port 5173",
-    "dev:electron": "wait-on dist-electron/main.cjs dist-electron/preload.cjs http-get://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 BRIEFCAST_ENABLE_API_BRIDGE=0 electronmon dist-electron/main.cjs",
-    "dev:nextjs": "wait-on dist-electron/main.cjs dist-electron/preload.cjs http-get://127.0.0.1:3000 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:3000 BRIEFCAST_ENABLE_API_BRIDGE=1 electronmon dist-electron/main.cjs",
-    "dev:with-nextjs": "concurrently -k \"npm:dev:main\" \"npm --prefix ../web run dev\" \"npm:dev:nextjs\"",
-    "build": "npm run build:main && npm run build:renderer",
-    "build:main": "tsup src/main/main.ts src/main/preload.ts --format cjs --external electron --out-dir dist-electron",
-    "build:renderer": "vite build",
+    "dev": "concurrently -k \"tsup src/main/main.ts src/main/preload.ts --format cjs --external electron --out-dir dist-electron --watch\" \"npm --prefix ./frontend run dev\" \"wait-on dist-electron/main.cjs dist-electron/preload.cjs http-get://127.0.0.1:3000 && cross-env FRONTEND_DEV_SERVER_URL=http://127.0.0.1:3000 BRIEFCAST_ENABLE_API_BRIDGE=1 electronmon dist-electron/main.cjs\"",
+    "build": "tsup src/main/main.ts src/main/preload.ts --format cjs --external electron --out-dir dist-electron && cross-env EXPORT_MODE=true npm --prefix ./frontend run build",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac",
     "dist:dmg": "npm run build && electron-builder --mac dmg",
     "dist:dmg:unsigned": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "electron-rebuild"
   },
   "build": {
     "appId": "com.briefcast.desktopts",
@@ -31,7 +25,7 @@
     },
     "files": [
       "dist-electron/**/*",
-      "dist-renderer/**/*",
+      "frontend/out/**/*",
       "package.json"
     ],
     "extraResources": [
@@ -78,14 +72,10 @@
     "logLevel": "quiet"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.2.4",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.2",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
     "@typescript-eslint/eslint-plugin": "^8.18.1",
     "@typescript-eslint/parser": "^8.18.1",
-    "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
     "cross-env": "^7.0.3",
     "electron": "^31.7.7",
@@ -93,10 +83,8 @@
     "electronmon": "^2.0.2",
     "eslint": "^9.16.0",
     "eslint-plugin-react-hooks": "^5.1.0",
-    "tailwindcss": "^4.2.4",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5",
     "wait-on": "^8.0.1"
   }
 }

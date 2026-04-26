@@ -471,6 +471,40 @@ export class LegacyStateService {
     return { ok: true, checked: this.state.rssLinks.length };
   }
 
+  shouldCheckRssFeed(link: string, maxAgeMs: number): boolean {
+    const normalized = link.trim();
+    if (!normalized) return false;
+    const row = this.state.rssLinks.find((entry) => entry.link === normalized);
+    if (!row || row.lastCheck === null) {
+      return true;
+    }
+    return Date.now() - row.lastCheck >= maxAgeMs;
+  }
+
+  markRssFeedChecked(link: string): void {
+    const normalized = link.trim();
+    if (!normalized) return;
+    const now = Date.now();
+    const existing = this.state.rssLinks.find((entry) => entry.link === normalized);
+    if (existing) {
+      existing.lastCheck = now;
+      existing.available = normalized.startsWith("http");
+      this.persist();
+      return;
+    }
+
+    const nextId = (this.state.rssLinks.at(-1)?.id ?? 0) + 1;
+    this.state.rssLinks.push({
+      id: nextId,
+      link: normalized,
+      country: "US",
+      category: "GENERAL",
+      lastCheck: now,
+      available: normalized.startsWith("http")
+    });
+    this.persist();
+  }
+
   getEnvConfig(): Record<string, string> {
     return { ...this.state.envConfig };
   }

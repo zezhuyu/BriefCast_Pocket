@@ -364,6 +364,13 @@ export class BriefcastDb {
     return row != null;
   }
 
+  getArticleIdByUrl(url: string): string | null {
+    const row = this.db
+      .prepare<[string], { id: string }>("SELECT id FROM articles WHERE url = ? LIMIT 1")
+      .get(url);
+    return row?.id ?? null;
+  }
+
   upsertArticle(
     article: IngestArticle,
     vector: number[],
@@ -410,6 +417,27 @@ export class BriefcastDb {
         embedding, embeddingModel
       );
     return "inserted";
+  }
+
+  /**
+   * Update just the image_url for an existing article (by URL) if it currently has no image.
+   * Returns true if an update was made, false otherwise.
+   */
+  updateArticleImageIfMissing(articleUrl: string, imageUrl: string): boolean {
+    if (!imageUrl) return false;
+    const result = this.db
+      .prepare("UPDATE articles SET image_url = ? WHERE url = ? AND (image_url IS NULL OR image_url = '')")
+      .run(imageUrl, articleUrl);
+    return result.changes > 0;
+  }
+
+  /** Get articles missing images (for enrichment). */
+  getArticlesMissingImages(limit = 100): Array<{ url: string }> {
+    return this.db
+      .prepare<[number], { url: string }>(
+        "SELECT url FROM articles WHERE image_url IS NULL OR image_url = '' ORDER BY published_at DESC LIMIT ?"
+      )
+      .all(limit);
   }
 
   /** FTS5 keyword search — uses SQLite full-text index. */
@@ -605,7 +633,15 @@ export class BriefcastDb {
 
   trackHistory(input: HistoryTrackInput, fallbackImage = ""): ListenHistoryItem {
     const article = this.getArticleById(input.recommendationId);
-    const base = article ?? { title: "", sourceName: "", url: "", id: input.recommendationId };
+    const podcast = !article ? this.getPodcastById(input.recommendationId) : null;
+    const base = article
+      ? { title: article.title, sourceName: article.sourceName, url: article.url, id: input.recommendationId }
+      : {
+          title: podcast?.title ?? "",
+          sourceName: podcast?.source_name ?? "",
+          url: podcast?.link ?? "",
+          id: input.recommendationId
+        };
 
     const durationSeconds =
       Number.isFinite(input.durationSeconds) && (input.durationSeconds ?? 0) > 0
@@ -621,6 +657,11 @@ export class BriefcastDb {
 
     const id = randomUUID();
     const now = Date.now();
+    const podcastImageResource =
+      podcast?.image_url && podcast.image_url.trim()
+        ? path.basename(podcast.image_url.startsWith("file://") ? podcast.image_url.slice(7) : podcast.image_url)
+        : "";
+    const imageResource = podcastImageResource || fallbackImage;
 
     this.db
       .prepare(`
@@ -631,19 +672,19 @@ export class BriefcastDb {
       `)
       .run(
         id, input.recommendationId,
-        base.title, (article as Article | null)?.sourceName ?? "",
-        (article as Article | null)?.sourceName ?? "", base.url,
-        fallbackImage, progressSeconds, durationSeconds, now
+        base.title, base.sourceName,
+        base.sourceName, base.url,
+        imageResource, progressSeconds, durationSeconds, now
       );
 
     return {
       id,
       recommendationId: input.recommendationId,
       title: base.title,
-      subcategory: (article as Article | null)?.sourceName ?? "",
-      sourceName: (article as Article | null)?.sourceName ?? "",
+      subcategory: base.sourceName,
+      sourceName: base.sourceName,
       url: base.url,
-      imageResource: fallbackImage,
+      imageResource,
       progressSeconds,
       durationSeconds,
       listenedAt: now,

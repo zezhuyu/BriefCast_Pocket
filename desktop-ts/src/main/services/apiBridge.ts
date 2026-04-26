@@ -7,6 +7,7 @@ import {
   DownloadSaveInput,
   HistoryTrackInput,
   MediaResourceFormat,
+  PreferenceActivityInput,
   SearchMode
 } from "../../shared/types";
 
@@ -112,6 +113,18 @@ export class ApiBridgeServer {
     const method = req.method ?? "GET";
     const authHeader = req.headers.authorization;
 
+    if (method === "GET" && (url.pathname.startsWith("/image/") || url.pathname.startsWith("/audio/") || url.pathname.startsWith("/transcript/"))) {
+      const [kind, ...parts] = url.pathname.split("/").filter(Boolean);
+      const fileName = decodeURIComponent(parts.join("/")).trim();
+      if (!kind || !fileName) {
+        this.writeJson(res, 404, { error: "File not found" });
+        return true;
+      }
+      const file = await this.service.readLegacyAssetBuffer(kind as "image" | "audio" | "transcript", fileName);
+      this.writeBinary(res, 200, file.mimeType, file.buffer);
+      return true;
+    }
+
     if (url.pathname.startsWith("/files/") && method === "GET") {
       const relative = decodeURIComponent(url.pathname.slice("/files/".length)).trim();
       const fileName = relative.split("/").pop() ?? "";
@@ -191,6 +204,24 @@ export class ApiBridgeServer {
       if (!podcast) {
         this.writeJson(res, 404, { error: "Podcast not found" });
       } else {
+        this.writeJson(res, 200, podcast);
+      }
+      return true;
+    }
+
+    if (url.pathname === "/podcast/force-daily" && method === "POST") {
+      const podcast = await this.service.forceDailyPodcast();
+      this.writeJson(res, 200, podcast);
+      return true;
+    }
+
+    if (url.pathname === "/podcast/generate-audio" && method === "POST") {
+      const body = (await this.readJson(req)) as Record<string, unknown>;
+      const recommendationId = String(body.recommendationId ?? body.podcast_id ?? "");
+      if (!recommendationId) {
+        this.writeJson(res, 400, { error: "recommendationId is required" });
+      } else {
+        const podcast = await this.service.generatePodcastAudio(recommendationId);
         this.writeJson(res, 200, podcast);
       }
       return true;
@@ -430,6 +461,14 @@ export class ApiBridgeServer {
       return;
     }
 
+    if (url.pathname === "/api/news/backfill-images" && req.method === "POST") {
+      const body = (await this.readJson(req)) as { batchSize?: number } | null;
+      const batchSize = body?.batchSize ?? 100;
+      const updated = await this.service.backfillMissingImages(batchSize);
+      this.writeJson(res, 200, { updated });
+      return;
+    }
+
     if (url.pathname === "/api/news/search" && req.method === "GET") {
       const query = url.searchParams.get("query") ?? "";
       const mode = (url.searchParams.get("mode") ?? "hybrid") as SearchMode;
@@ -500,6 +539,23 @@ export class ApiBridgeServer {
       return;
     }
 
+    if (url.pathname === "/api/playing" && req.method === "POST") {
+      const body = (await this.readJson(req)) as Record<string, unknown>;
+      const podcastId = String(body.podcast_id ?? "");
+      const position = Number(body.position ?? 0);
+      const userId = this.service.resolveLegacyUserId(req.headers.authorization);
+      const result = await this.service.markLegacyPlaying(userId, podcastId, position);
+      this.writeJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/preferences/activity" && req.method === "POST") {
+      const body = (await this.readJson(req)) as PreferenceActivityInput;
+      const result = await this.service.trackPreferenceActivity(body);
+      this.writeJson(res, 200, result);
+      return;
+    }
+
     if (url.pathname === "/api/downloads" && req.method === "GET") {
       const limit = Number(url.searchParams.get("limit") ?? "500");
       const result = this.service.getDownloads(Number.isFinite(limit) ? limit : 500);
@@ -531,19 +587,11 @@ export class ApiBridgeServer {
 
     // ── Podcast ───────────────────────────────────────────────────────────────
     if (url.pathname === "/api/podcast/daily" && req.method === "GET") {
-      // Return immediately from cache/DB; kick off background generation if needed.
-      // Do NOT await generation — it can take minutes and would hang the request.
-      const today = new Date().toISOString().slice(0, 10);
-      const existing = this.service.getPodcastById(`daily-${today}`);
-      if (existing && existing.audio_url) {
-        this.writeJson(res, 200, existing);
-      } else {
-        // Trigger generation asynchronously (fire-and-forget)
-        this.service.getDailyPodcast().catch((err: unknown) =>
-          console.error("[apiBridge] background daily generation failed:", err)
-        );
-        this.writeJson(res, 204, null);
-      }
+      // Always go through service.getDailyPodcast so cached daily payload is
+      // normalized (e.g. enforced daily cover image) before responding.
+      const result = await this.service.getDailyPodcast();
+      if (result && result.audio_url) this.writeJson(res, 200, result);
+      else this.writeJson(res, 204, null);
       return;
     }
 
@@ -583,6 +631,47 @@ export class ApiBridgeServer {
       const rating = Number(body.rating ?? 0);
       const result = await this.service.ratePodcast(podcastId, rating);
       this.writeJson(res, 200, result);
+      return;
+    }
+
+    // ── Playlists (modern API aliases) ───────────────────────────────────────
+    if (url.pathname === "/api/playlists" && req.method === "GET") {
+      const result = await this.service.getPlaylists();
+      this.writeJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/playlists" && req.method === "POST") {
+      const body = (await this.readJson(req)) as Record<string, unknown>;
+      const name = String(body.name ?? "");
+      const description = String(body.description ?? "");
+      const result = this.service.createPlaylist(name, description);
+      this.writeJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/playlists/") && url.pathname.endsWith("/add") && req.method === "POST") {
+      const playlistId = decodeURIComponent(url.pathname.slice("/api/playlists/".length, -"/add".length));
+      const body = (await this.readJson(req)) as Record<string, unknown>;
+      const podcastId = String(body.podcastId ?? body.podcast_id ?? "");
+      this.service.addToPlaylist(playlistId, podcastId);
+      this.writeJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/playlists/") && url.pathname.endsWith("/remove") && req.method === "POST") {
+      const playlistId = decodeURIComponent(url.pathname.slice("/api/playlists/".length, -"/remove".length));
+      const body = (await this.readJson(req)) as Record<string, unknown>;
+      const podcastId = String(body.podcastId ?? body.podcast_id ?? "");
+      this.service.removeFromPlaylist(playlistId, podcastId);
+      this.writeJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/playlists/") && req.method === "DELETE") {
+      const playlistId = decodeURIComponent(url.pathname.slice("/api/playlists/".length));
+      this.service.deletePlaylist(playlistId);
+      this.writeJson(res, 200, { ok: true });
       return;
     }
 

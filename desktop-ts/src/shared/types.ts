@@ -47,6 +47,7 @@ export interface UserPreferenceSettings {
   topics: string[];
   region: string;
   language: string;
+  dailyBriefingCount: number;
 }
 
 export interface AppSettings {
@@ -63,6 +64,7 @@ export interface TtsSettings {
   voice: string;
   model: string;
   systemVoice: string;
+  hostVoice?: string;
 }
 
 export interface Article {
@@ -152,6 +154,31 @@ export interface HistoryTrackInput {
   durationSeconds?: number;
 }
 
+export interface PreferenceActionLog {
+  timestamp: number;
+  action: "share" | "download" | "add_to_playlist" | "like" | "dislike" | "remove_from_playlist" | "seek";
+  podcastId: string;
+  details?: unknown;
+}
+
+export interface PreferencePositionLog {
+  time: number;
+  position: number;
+}
+
+export interface PreferenceActivityInput {
+  podcast_id: string;
+  actions?: PreferenceActionLog[];
+  listened_seconds?: number[];
+  listen_duration_seconds?: number;
+  total_duration_seconds?: number;
+  coverage_percentage?: number;
+  last_position?: number;
+  position_log?: PreferencePositionLog[];
+  listening_time?: number;
+  auto_play?: boolean;
+}
+
 export interface DownloadSaveInput {
   recommendationId: string;
   imageResource?: string;
@@ -231,7 +258,7 @@ export interface PlaylistInfo {
 
 export interface UserProfile {
   id: string;
-  preference: { topics: string[]; region: string; language: string };
+  preference: { topics: string[]; region: string; language: string; dailyBriefingCount: number };
   location?: [number, number];
 }
 
@@ -296,6 +323,9 @@ export interface RendererBridge {
   // User profile
   getUserProfile(): Promise<UserProfile>;
   updateUserProfile(prefs: Partial<UserPreferenceSettings>): Promise<UserProfile>;
+
+  // Settings hotload — returns unsubscribe fn
+  onSettingsChanged(cb: (settings: AppSettings) => void): () => void;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -342,12 +372,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   preferences: {
     topics: ["technology", "business", "world"],
     region: "US",
-    language: "en"
+    language: "en",
+    dailyBriefingCount: 5
   },
   tts: {
     provider: "openai-compatible",
     voice: "alloy",
     model: "gpt-4o-mini-tts",
-    systemVoice: "Samantha"
+    systemVoice: "Samantha",
+    hostVoice: "nova"
   }
 };

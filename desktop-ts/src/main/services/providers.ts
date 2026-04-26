@@ -301,12 +301,16 @@ export async function embedText(settings: AppSettings, text: string): Promise<nu
   }
 }
 
-export async function synthesizeSpeech(settings: AppSettings, text: string): Promise<{ mimeType: string; buffer: Buffer }> {
+export async function synthesizeSpeech(
+  settings: AppSettings,
+  text: string,
+  voiceOverride?: string
+): Promise<{ mimeType: string; buffer: Buffer }> {
   const textPreview = text.slice(0, 60).replace(/\n/g, " ");
   console.log(`[tts] synthesising (${settings.tts.provider}) "${textPreview}…"`);
 
   if (settings.tts.provider === "system-say") {
-    const voice = settings.tts.systemVoice || "Samantha";
+    const voice = voiceOverride || settings.tts.systemVoice || "Samantha";
     console.log("[tts] using macOS say, voice:", voice);
     const outPath = path.join(os.tmpdir(), `briefcast-tts-${Date.now()}.aiff`);
     await new Promise<void>((resolve, reject) => {
@@ -341,8 +345,10 @@ export async function synthesizeSpeech(settings: AppSettings, text: string): Pro
     throw new Error("OpenAI-compatible API key is required for TTS synthesis");
   }
 
+  // Use override voice if provided, otherwise fall back to settings
+  const voice = voiceOverride || settings.tts.voice || "alloy";
   const url = `${ensureTrailingSlash(config.baseUrl)}/audio/speech`;
-  console.log("[tts] POST", url, "model:", settings.tts.model || "gpt-4o-mini-tts", "voice:", settings.tts.voice || "alloy");
+  console.log("[tts] POST", url, "model:", settings.tts.model || "gpt-4o-mini-tts", "voice:", voice);
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -351,7 +357,7 @@ export async function synthesizeSpeech(settings: AppSettings, text: string): Pro
     },
     body: JSON.stringify({
       model: settings.tts.model || "gpt-4o-mini-tts",
-      voice: settings.tts.voice || "alloy",
+      voice,
       input: text,
       format: "mp3"
     })
