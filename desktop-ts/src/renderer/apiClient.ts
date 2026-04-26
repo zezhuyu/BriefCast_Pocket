@@ -238,6 +238,11 @@ class HttpBridgeClient implements RendererBridge {
       body: JSON.stringify(prefs)
     });
   }
+
+  async getFinancialNews(limit?: number): Promise<SearchResult[]> {
+    const params = new URLSearchParams({ limit: String(limit ?? 30) });
+    return fetchJson<SearchResult[]>(`${LOCAL_API_BASE}/api/news/financial?${params.toString()}`);
+  }
 }
 
 let resolvedClient: RendererBridge | null = null;
@@ -414,6 +419,10 @@ class DynamicClient implements RendererBridge {
 
   async updateUserProfile(prefs: Partial<UserPreferenceSettings>): Promise<UserProfile> {
     return (await resolveClient()).updateUserProfile(prefs);
+  }
+
+  async getFinancialNews(limit?: number): Promise<SearchResult[]> {
+    return (await resolveClient()).getFinancialNews(limit);
   }
 }
 

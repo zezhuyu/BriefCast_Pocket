@@ -5,7 +5,7 @@ import { ConfigStore } from "./configStore";
 import { BriefcastDb } from "./db";
 import { LegacyStateService, LegacyRssLink } from "./legacyState";
 import { MediaResourceService } from "./mediaResources";
-import { dedupeArticles, enrichWithArticleImages, fetchHackerNews, fetchReddit, fetchRssNews } from "./newsSources";
+import { dedupeArticles, enrichWithArticleImages, fetchDevTo, fetchGithubTrending, fetchGoogleNews, fetchHackerNews, fetchLobsters, fetchProductHunt, fetchReddit, fetchRssNews, fetchSlashdot } from "./newsSources";
 import { embedText, generateText, synthesizeSpeech } from "./providers";
 import { generateDailyPodcast } from "./podcastPipeline";
 import {
@@ -217,6 +217,80 @@ export class BriefcastAppService {
       }
     }
 
+    if (this.settings.sources.devToEnabled) {
+      const tags = this.settings.sources.devToTags.length ? this.settings.sources.devToTags : ["news", "technology"];
+      console.log("[syncNews] fetching Dev.to tags:", tags);
+      try {
+        const devto = await fetchDevTo(tags, 15);
+        console.log("[syncNews] Dev.to returned", devto.length, "articles");
+        all.push(...devto);
+      } catch (error) {
+        sourceErrors.push(`devto:${error instanceof Error ? error.message : String(error)}`);
+        console.error("[syncNews] Dev.to error:", error);
+      }
+    }
+
+    if (this.settings.sources.lobstersEnabled) {
+      console.log("[syncNews] fetching Lobste.rs…");
+      try {
+        const lobsters = await fetchLobsters(40);
+        console.log("[syncNews] Lobste.rs returned", lobsters.length, "articles");
+        all.push(...lobsters);
+      } catch (error) {
+        sourceErrors.push(`lobsters:${error instanceof Error ? error.message : String(error)}`);
+        console.error("[syncNews] Lobste.rs error:", error);
+      }
+    }
+
+    if (this.settings.sources.googleNewsEnabled) {
+      const topics = this.settings.sources.googleNewsTopics.length ? this.settings.sources.googleNewsTopics : ["technology", "world"];
+      console.log("[syncNews] fetching Google News topics:", topics);
+      try {
+        const gnews = await fetchGoogleNews(topics, 15);
+        console.log("[syncNews] Google News returned", gnews.length, "articles");
+        all.push(...gnews);
+      } catch (error) {
+        sourceErrors.push(`googlenews:${error instanceof Error ? error.message : String(error)}`);
+        console.error("[syncNews] Google News error:", error);
+      }
+    }
+
+    if (this.settings.sources.githubTrendingEnabled) {
+      console.log("[syncNews] fetching GitHub Trending…");
+      try {
+        const gh = await fetchGithubTrending(25);
+        console.log("[syncNews] GitHub Trending returned", gh.length, "articles");
+        all.push(...gh);
+      } catch (error) {
+        sourceErrors.push(`github-trending:${error instanceof Error ? error.message : String(error)}`);
+        console.error("[syncNews] GitHub Trending error:", error);
+      }
+    }
+
+    if (this.settings.sources.slashdotEnabled) {
+      console.log("[syncNews] fetching Slashdot…");
+      try {
+        const slashdot = await fetchSlashdot(20);
+        console.log("[syncNews] Slashdot returned", slashdot.length, "articles");
+        all.push(...slashdot);
+      } catch (error) {
+        sourceErrors.push(`slashdot:${error instanceof Error ? error.message : String(error)}`);
+        console.error("[syncNews] Slashdot error:", error);
+      }
+    }
+
+    if (this.settings.sources.productHuntEnabled) {
+      console.log("[syncNews] fetching ProductHunt…");
+      try {
+        const ph = await fetchProductHunt(25);
+        console.log("[syncNews] ProductHunt returned", ph.length, "articles");
+        all.push(...ph);
+      } catch (error) {
+        sourceErrors.push(`producthunt:${error instanceof Error ? error.message : String(error)}`);
+        console.error("[syncNews] ProductHunt error:", error);
+      }
+    }
+
     const deduped = dedupeArticles(all);
     console.log("[syncNews] total fetched:", all.length, "after dedup:", deduped.length);
 
@@ -227,7 +301,19 @@ export class BriefcastAppService {
     let updated = 0;
     let skipped = 0;
 
+    const embeddingModel =
+      this.settings.providers.activeProvider === "openai-compatible"
+        ? this.settings.providers.openaiCompatible.embeddingModel || "local-hash-v1"
+        : "local-hash-v1";
+
     for (const article of deduped) {
+      // Skip articles already in DB — no need to re-embed on periodic syncs
+      if (this.db.articleExistsByUrl(article.url)) {
+        skipped += 1;
+        continue;
+      }
+
+      // Embed the title as the primary semantic signal, followed by summary and content
       const searchable = `${article.title}\n${article.summary}\n${article.content}`.trim();
       if (!searchable || searchable.length < 12) {
         skipped += 1;
@@ -235,13 +321,7 @@ export class BriefcastAppService {
       }
 
       const vector = await embedText(this.settings, searchable);
-      const status = this.db.upsertArticle(
-        article,
-        vector,
-        this.settings.providers.activeProvider === "openai-compatible"
-          ? this.settings.providers.openaiCompatible.embeddingModel || "local-hash-v1"
-          : "local-hash-v1"
-      );
+      const status = this.db.upsertArticle(article, vector, embeddingModel);
 
       if (status === "inserted") {
         inserted += 1;
@@ -280,6 +360,15 @@ export class BriefcastAppService {
     }
 
     return this.db.hybridSearch(trimmed, queryVector, limit);
+  }
+
+  /**
+   * Returns articles filtered to financial topics (markets, economy, stocks, crypto, etc.).
+   * Uses FTS5 with financial keywords, then re-ranks by recency.
+   */
+  async getFinancialNews(limit = 30): Promise<SearchResult[]> {
+    await this.ensureSeedNews();
+    return this.db.financialNews(limit);
   }
 
   /**
@@ -349,18 +438,63 @@ export class BriefcastAppService {
   }
 
   /**
+   * Summarises what the user has actually been engaging with:
+   * - Articles listened to ≥ 60% completion in the last 30 days
+   * - Source types with the most completions
+   * - Sources from positively rated podcasts
+   * Returns an empty string when no behavioral data exists yet.
+   */
+  private buildBehavioralSignalSummary(): string {
+    const engaged = this.db.getEngagedHistory(30, 0.6);
+    const sourceTypes = this.db.getEngagedSourceTypes(30);
+    const ratedSources = this.db.getPositivelyRatedSources();
+
+    if (!engaged.length && !ratedSources.length) return "";
+
+    const sourceNameCounts = new Map<string, number>();
+    for (const h of engaged) {
+      if (h.source_name) {
+        sourceNameCounts.set(h.source_name, (sourceNameCounts.get(h.source_name) ?? 0) + 1);
+      }
+    }
+    const topSources = [...sourceNameCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, count]) => `${name} (${count})`);
+
+    const parts: string[] = [];
+    if (engaged.length) {
+      parts.push(`User completed ${engaged.length} articles (≥60%) in the last 30 days.`);
+    }
+    if (topSources.length) {
+      parts.push(`Most engaged sources: ${topSources.join(", ")}.`);
+    }
+    if (sourceTypes.length) {
+      parts.push(`Top content types by engagement: ${sourceTypes.slice(0, 3).map(r => `${r.source_type} (${r.count})`).join(", ")}.`);
+    }
+    if (ratedSources.length) {
+      const ratedNames = [...new Set(ratedSources.map(r => r.source_name).filter(Boolean))].slice(0, 3);
+      if (ratedNames.length) parts.push(`Positively rated sources: ${ratedNames.join(", ")}.`);
+    }
+
+    return parts.join(" ");
+  }
+
+  /**
    * Build a rich natural-language preference description by asking the LLM.
+   * Blends manual topic settings with behavioral signals (listen completion + ratings).
    * Falls back to a template string if the LLM call fails or isn't configured.
    */
   private async buildPreferenceDescription(): Promise<string> {
     const { topics, region, language } = this.settings.preferences;
     const topicList = topics.filter(Boolean).join(", ") || "general news";
+    const behaviorSummary = this.buildBehavioralSignalSummary();
 
     // Template fallback (used when LLM unavailable)
     const fallback = `News articles about ${topicList} relevant to a reader in ${region || "the US"} who prefers content in ${language || "English"}. Focus on recent developments, analysis, and key events.`;
 
     try {
-      const prompt = [
+      const promptLines = [
         "You are helping a personalized news podcast app select relevant articles for a user.",
         "Write a 2-3 sentence description of what this user wants to read, for use as a semantic search query.",
         "Be specific about topics, tone, and recency. Output only the description text, no labels.",
@@ -369,15 +503,61 @@ export class BriefcastAppService {
         `  Topics of interest: ${topicList}`,
         `  Region: ${region || "US"}`,
         `  Language: ${language || "English"}`,
-      ].join("\n");
+      ];
+      if (behaviorSummary) {
+        promptLines.push("", "Behavioral signals (use to refine the description):", `  ${behaviorSummary}`);
+      }
 
-      const description = await generateText(this.settings, prompt);
+      const description = await generateText(this.settings, promptLines.join("\n"));
       const trimmed = description.trim();
       console.log("[getRecommendations] AI preference description:", trimmed.slice(0, 120) + "…");
       return trimmed || fallback;
     } catch (err) {
       console.warn("[getRecommendations] AI preference description failed, using template fallback:", err instanceof Error ? err.message : err);
       return fallback;
+    }
+  }
+
+  /**
+   * Analyzes recent listening behavior and positive ratings, then asks the LLM to
+   * suggest updated topic keywords. Saves the result back to settings so future
+   * briefings and recommendations reflect actual usage.
+   * Called once daily by the scheduler. No-ops if there is no behavioral data yet.
+   */
+  async refreshTopicsFromBehavior(): Promise<void> {
+    const behaviorSummary = this.buildBehavioralSignalSummary();
+    if (!behaviorSummary) {
+      console.log("[preference-refresh] no behavioral data yet — skipping");
+      return;
+    }
+
+    const currentTopics = this.settings.preferences.topics.join(", ") || "general news";
+    const prompt = [
+      "You are updating a personalized news podcast app's topic preferences based on user listening behavior.",
+      "Suggest 3-6 concise topic keywords that best capture this user's interests.",
+      'Output ONLY a JSON array of strings. Example: ["artificial intelligence", "startups", "climate"]',
+      "",
+      `Current manual topics: ${currentTopics}`,
+      `Behavioral signals: ${behaviorSummary}`,
+    ].join("\n");
+
+    try {
+      const response = await generateText(this.settings, prompt);
+      const match = response.match(/\[[\s\S]*?\]/);
+      if (!match) {
+        console.warn("[preference-refresh] LLM response had no JSON array:", response.slice(0, 100));
+        return;
+      }
+      const parsed = JSON.parse(match[0]) as unknown;
+      if (!Array.isArray(parsed) || !parsed.every((t) => typeof t === "string")) return;
+      const topics = (parsed as string[]).map((t) => t.trim()).filter(Boolean).slice(0, 6);
+      if (!topics.length) return;
+
+      this.settings.preferences.topics = topics;
+      this.configStore.save(this.settings);
+      console.log("[preference-refresh] topics updated from behavior:", topics);
+    } catch (err) {
+      console.warn("[preference-refresh] failed:", err instanceof Error ? err.message : err);
     }
   }
 

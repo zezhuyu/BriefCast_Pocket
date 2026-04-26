@@ -61,21 +61,9 @@ export default function AccountPage( {username, setUsername, isTauri}: {username
 
       // Fetch user info, history, and playlists in parallel
       const [userResponse, historyResponse, playlistsResponse] = await Promise.all([
-        axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}user`, {
-          headers: {
-            "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-          }
-        }),
-        axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}history`, {
-          headers: {
-            "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-          }
-        }),
-        axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}playlists`, {
-          headers: {
-            "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-          }
-        })
+        axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}user/profile`),
+        axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}history`),
+        axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}playlists`),
       ]);
 
       setUserInfo(userResponse.data);
@@ -90,74 +78,10 @@ export default function AccountPage( {username, setUsername, isTauri}: {username
     }
   };
 
-  const fetchTokens = async () => {
-    try {
-      setTokenLoading(true);
-      const response = await axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}token`, {
-        headers: {
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
-      setTokens(response.data);
-    } catch (err: any) {
-      console.error("Error fetching tokens:", err);
-      setError(err.response?.data?.error || "Failed to load tokens");
-    } finally {
-      setTokenLoading(false);
-    }
-  };
-
-  const issueNewToken = async () => {
-    if (!userInfo) return;
-    
-    try {
-      setIssuingToken(true);
-      const response = await axios.post(`${process.env.NEXT_PUBLIC_BACKEND_URL}token`, {
-        user_id: userInfo.id
-      }, {
-        headers: {
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
-      
-      // Refresh token list after issuing
-      await fetchTokens();
-    } catch (err: any) {
-      console.error("Error issuing token:", err);
-      alert(err.response?.data?.error || "Failed to issue new token");
-    } finally {
-      setIssuingToken(false);
-    }
-  };
-
-  const revokeToken = async (token: string) => {
-    if (!userInfo) return;
-
-    try {
-      setRevokingTokens(prev => new Set(prev).add(token));
-      await axios.delete(`${process.env.NEXT_PUBLIC_BACKEND_URL}token`, {
-        data: {
-          user_id: userInfo.id,
-          token: token
-        },
-        headers: {
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
-      
-      // Refresh token list after revoking
-      await fetchTokens();
-    } catch (err: any) {
-      console.error("Error revoking token:", err);
-      alert(err.response?.data?.error || "Failed to revoke token");
-    } finally {
-      setRevokingTokens(prev => {
-        const newSet = new Set(prev);
-        newSet.delete(token);
-        return newSet;
-      });
-    }
-  };
+  // desktop-ts has no multi-user token management — these are no-ops
+  const fetchTokens = async () => { setTokenLoading(false); };
+  const issueNewToken = async () => {};
+  const revokeToken = async (_token: string) => {};
 
   const formatDuration = (seconds: number) => {
     const hours = Math.floor(seconds / 3600);

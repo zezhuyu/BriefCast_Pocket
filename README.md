@@ -175,3 +175,15 @@ This project is licensed under the terms specified in the [LICENSE](LICENSE) fil
 
 We welcome contributions!
 
+
+## 🖥️ TypeScript Desktop Rewrite
+
+A pure TypeScript desktop rewrite is available under [`desktop-ts/`](desktop-ts).
+
+```bash
+cd desktop-ts
+npm install
+npm run dev
+```
+
+This rewrite also starts a local compatibility API bridge (REST/GraphQL/MCP) so existing API-based tooling can still connect.

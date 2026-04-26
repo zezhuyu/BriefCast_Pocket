@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import MiniPlayer from "@/components/MiniPlayer";
 import { usePlayer } from "@/context/PlayerContext";
 import { openDB, DBSchema } from 'idb';
-import { getName } from "@tauri-apps/api/app";
 
 // Define DB schema types to match with app/page.tsx
 interface PodcastDBSchema extends DBSchema {
@@ -182,7 +181,7 @@ const PodcastItem = ({
         URL.revokeObjectURL(coverImageUrl);
       }
     };
-  }, [podcast.image_url, coverImageUrl]);
+  }, [podcast.image_url]); // eslint-disable-line react-hooks/exhaustive-deps
   
   return (
     <div 
@@ -191,7 +190,7 @@ const PodcastItem = ({
     >
       <div className="relative aspect-square">
         <Image
-          src={coverImageUrl?.startsWith('http') ? coverImageUrl : process.env.NEXT_PUBLIC_BACKEND_URL + `files/${coverImageUrl}`}
+          src={coverImageUrl?.startsWith('http') || coverImageUrl?.startsWith('file://') || coverImageUrl?.startsWith('data:') ? coverImageUrl : `https://picsum.photos/seed/${podcast.id}/300/300`}
           alt={podcast.title || ''}
           width={300}
           height={300}
@@ -235,24 +234,10 @@ export default function DownloadsPage() {
   const [totalStorage, setTotalStorage] = useState(0);
   const router = useRouter();
   const { setCurrentPodcast } = usePlayer();
-  const [tauri, setTauri] = useState(false)
-  
+  const tauri = false;
+
   // Load downloads on mount
   useEffect(() => {
-    const isTauri = async () => {
-      try {
-        await getName();
-        return true;
-      } catch {
-        return false; 
-      }
-    }
-
-    isTauri().then((isTauri) => {
-      if (isTauri) {
-        setTauri(true)
-      }
-    })
     const loadDownloads = async () => {
       setIsLoading(true);
       try {

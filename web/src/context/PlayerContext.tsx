@@ -265,15 +265,17 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}played`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}history/track`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
         },
-        body: JSON.stringify(activityData),
+        body: JSON.stringify({
+          recommendationId: activityData.podcast_id,
+          progressSeconds: activityData.last_position,
+          durationSeconds: activityData.total_duration_seconds,
+        }),
         cache: 'no-cache',
-        credentials: 'same-origin'
       });
       
       if (!response.ok) {
@@ -345,24 +347,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       //   return logPositionToBackend(position);
       // }
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}playing`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        },
-        body: JSON.stringify({
-          podcast_id: currentPodcast.id,
-          position: position,
-          timestamp: Date.now()
-        }),
-        cache: 'no-cache',
-        credentials: 'same-origin'
-      });
-
-      if (!response.ok) {
-        console.error('Failed to log position:', await response.text());
-      }
+      // desktop-ts has no real-time position endpoint — no-op
     } catch (error) {
       console.error('Error logging position:', error);
     }
@@ -434,17 +419,17 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
 
     const loadPodcast = async () => {
-      if (pathname.includes("/signin") || pathname.includes("/signup") || pathname.includes("/dashboard")) {
-        return null;
+      if (pathname.includes("/signin") || pathname.includes("/signup") || pathname.includes("/dashboard") || pathname.includes("/library") || pathname.includes("/history") || pathname.includes("/downloads")) {
+        return;
       }
       // Skip loading if we already have the current podcast
-      if (currentPodcast && 
-        currentPodcast.id === podcastId && 
-        currentPodcast.hasOwnProperty("image_url") && 
-        currentPodcast.hasOwnProperty("audio_url") && 
-        currentPodcast.hasOwnProperty("transcript_url") && 
-        currentPodcast.image_url !== "" && 
-        currentPodcast.audio_url !== "" && 
+      if (currentPodcast &&
+        currentPodcast.id === podcastId &&
+        currentPodcast.hasOwnProperty("image_url") &&
+        currentPodcast.hasOwnProperty("audio_url") &&
+        currentPodcast.hasOwnProperty("transcript_url") &&
+        currentPodcast.image_url !== "" &&
+        currentPodcast.audio_url !== "" &&
         currentPodcast.transcript_url !== "") {
         return;
       }
@@ -455,88 +440,55 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "podcast/" + podcastId, {
             method: "GET",
             cache: 'no-cache',
-            credentials: 'same-origin',
             headers: {
               'Content-Type': 'application/json',
-              "Authorization": `Bearer ${localStorage.getItem('authToken')}`
             }
           });
           if (response.status === 404) {
             await new Promise(resolve => setTimeout(resolve, 3000));
             return loadPodcast();
           }
-          if (response.status === 401) {
-            router.push("/signin");
-            return;
-          }
         } catch (error) {
           console.error("Error loading podcast:", error);
         }
-      }else{
-        let locationData;
+      } else {
+        // No podcastId — fetch today's pre-generated daily podcast (read-only, no generation)
         try {
-          const location = await getLocation();
-          locationData = [location.coords.latitude, location.coords.longitude];
-        } catch (locError) {
-          // Fallback to default location
-          locationData = [0, 0];
-        }
-        try {
-          response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "generate", {
-            method: "POST",
+          response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "podcast/daily", {
+            method: "GET",
             cache: 'no-cache',
-            credentials: 'same-origin',
-            headers: {
-              'Content-Type': 'application/json',
-              "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-            },
-            body: JSON.stringify({
-              location: locationData
-            })
+            headers: { 'Content-Type': 'application/json' }
           });
         } catch (error) {
-          console.error("Error generating new podcast:", error);
+          console.error("Error fetching daily podcast:", error);
+          return; // network error — don't retry loop
         }
       }
-        // Check if URLs are empty
-        if (!response) {
-          console.error("No response received");
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          return loadPodcast();
-        }
 
-        if (response.status === 401) {
-          router.push("/signin");
-          return;
-        }
-        
+        if (!response) return;
+
+        // 204 / 404 → no daily podcast yet, wait for user to generate one
+        if (response.status === 204 || response.status === 404) return;
+
         try {
           data = await safeJsonParse(response);
         } catch (error) {
           console.error("Error parsing podcast data:", error);
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          return loadPodcast();
+          return; // bad JSON — don't retry loop
         }
 
-        if (data.image_url === "") {
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          return loadPodcast();
-        }else{
-          if (!data.image_url.startsWith("http") && !data.image_url.startsWith('/api/') && !data.image_url.startsWith('blob:')) data.image_url = process.env.NEXT_PUBLIC_BACKEND_URL + 'files/' + data.image_url;
+        // null means no podcast ready yet
+        if (!data) return;
+
+        if (!data.image_url || data.image_url === "") {
+          data.image_url = `https://picsum.photos/seed/${data.id}/300/300`;
+        } else if (!data.image_url.startsWith("http") && !data.image_url.startsWith('/api/') && !data.image_url.startsWith('blob:') && !data.image_url.startsWith('file://') && !data.image_url.startsWith('data:')) {
+          data.image_url = `https://picsum.photos/seed/${data.id}/300/300`;
         }
 
-        if (data.transcript_url === "" || data.transcript_url === null) {
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          return loadPodcast();
-        }else{
-          if (!data.transcript_url.startsWith(process.env.NEXT_PUBLIC_BACKEND_URL) && 
-            !data.transcript_url.startsWith('blob:') && 
-            !data.transcript_url.startsWith('data:text/plain')) {
-            data.transcript_url = process.env.NEXT_PUBLIC_BACKEND_URL + 'files/' + data.transcript_url;
-          }
-        }
+        if (!data.transcript_url || data.transcript_url === "") return; // audio not ready
+        if (!data.audio_url || data.audio_url === "") return;
 
-        if (!data.audio_url.startsWith("http") && !data.audio_url.startsWith('/api/') && !data.audio_url.startsWith('blob:')) data.audio_url = process.env.NEXT_PUBLIC_BACKEND_URL + 'files/' + data.audio_url;
         setCurrentPodcast(data);
         // Set autoPlay based on whether this is an automatic transition
         if (isAutomaticTransition) {
@@ -557,13 +509,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         await new Promise(resolve => setTimeout(resolve, 3000));
         return checkPlaylistAndFetchRecommendations(podcast);
       }
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}recommendations/${podcast.id}`, { 
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}library/recommendations`, {
         method: "GET",
         cache: 'no-cache',
-        credentials: 'same-origin',
-        headers: {
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        }
       }); 
       
       if (!response.ok) {
@@ -679,23 +627,16 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "playlists", {
           method: "GET",
           cache: 'no-cache',
-          credentials: 'same-origin',
-          headers: {
-            "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-          }
         });
 
-        if (response.status === 401) {
-          router.push("/signin");
-          return;
-        }
-        
         if (!response.ok) {
           return;
         }
-        
+
         const data = await safeJsonParse(response);
-        setPlaylists(data);
+        // desktop-ts returns PlaylistInfo[] with `items` instead of `podcasts`
+        const mapped = data.map((p: any) => ({ ...p, podcasts: p.items ?? [] }));
+        setPlaylists(mapped);
       } catch (error) {
         console.error("Error loading playlists:", error);
       }
@@ -842,29 +783,25 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   // Create a new playlist
   const createPlaylist = async (name: string): Promise<string> => {
     try {
-      const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "playlist", {
+      const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "playlists", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
         },
-        body: JSON.stringify({
-          name
-        }),
+        body: JSON.stringify({ name }),
         cache: 'no-cache',
-        credentials: 'same-origin'
       });
-      
+
       if (!response.ok) {
         throw new Error(`Failed to create playlist: ${response.status} ${response.statusText}`);
       }
-      
+
       const data = await safeJsonParse(response);
       if (data.hasOwnProperty('id') && data.id !== null) {
         const newPlaylist: Playlist = {
           id: data.id,
           name,
-          podcasts: []
+          podcasts: data.items ?? []
         };
         setPlaylists(prev => prev ? [...prev, newPlaylist] : [newPlaylist]);
         return newPlaylist.id;
@@ -878,17 +815,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   };
 
   const deletePlaylist = async (playlistId: string) => {
-    const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "playlist", {
+    const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "playlists/" + playlistId, {
       method: "DELETE",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-      },
-      body: JSON.stringify({
-        id: playlistId,
-      }),
       cache: 'no-cache',
-      credentials: 'same-origin'
     });
     if (response.ok) {
       setPlaylists(prev => prev?.filter(playlist => playlist.id !== playlistId));
@@ -901,17 +830,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     // Log the action
     logUserAction('add_to_playlist', { playlistId });
     
-    const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "playlist/" + playlistId, {
+    const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "playlists/" + playlistId + "/add", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-      },
-      body: JSON.stringify({
-        podcast_id: podcast.id,
-      }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ podcastId: podcast.id }),
       cache: 'no-cache',
-      credentials: 'same-origin'
     });
     if (response.ok) {
       if (playlistId === currentPlaylist?.id) {
@@ -947,17 +870,11 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     // Log the action
     logUserAction('remove_from_playlist', { playlistId });
     
-    const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "playlist/" + playlistId, {
-      method: "DELETE",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-      },
-      body: JSON.stringify({
-        podcast_id: podcastId,
-      }),
+    const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "playlists/" + playlistId + "/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ podcastId }),
       cache: 'no-cache',
-      credentials: 'same-origin'
     });
     if (response.ok) {
       if (playlistId === currentPlaylist?.id) {
@@ -1001,35 +918,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       }
       if (list.length > 0 && currentPodcast && list.findIndex(p => p.id === currentPodcast.id) < list.length - 1) {
         const podcastId = list[list.findIndex(p => p.id === currentPodcast.id) + 1].id;
+        // prefetch next podcast metadata
         fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "podcast/" + podcastId, {
           method: "GET",
           cache: 'no-cache',
-          credentials: 'same-origin',
-          headers: {
-            'Content-Type': 'application/json',
-            "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-          }
+          headers: { 'Content-Type': 'application/json' }
         });
-        if (currentPodcast.id === "") {
-          return;
-        }
-        try {
-          fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "transition", {
-            method: "POST",
-            cache: 'no-cache',
-            credentials: 'same-origin',
-            headers: {
-              'Content-Type': 'application/json',
-              "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-            },
-            body: JSON.stringify({
-              id1: currentPodcast.id,
-              id2: podcastId
-            })
-          });
-        } catch (error) {
-          console.error("Error fetching transition:", error);
-        }
       }
     }
     fetchPodcast();
@@ -1113,78 +1007,10 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  // Add new function to load and play transition
-  const loadAndPlayTransition = async (currentId: string, nextId: string) => {
-    try {
-      const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "transition", {
-        method: "POST",
-        cache: 'no-cache',
-        credentials: 'same-origin',
-        headers: {
-          'Content-Type': 'application/json',
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        },
-        body: JSON.stringify({
-          id1: currentId,
-          id2: nextId
-        })
-      });
-
-      if (!response.ok) {
-        console.error("Failed to fetch transition:", response.status, response.statusText);
-        setPodcastId(nextId);
-        return;
-      }
-
-      const transitionData = await safeJsonParse(response);
-
-      if (transitionData.audio_url === "") {
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        return loadAndPlayTransition(currentId, nextId); 
-      }
-      
-      if (transitionData.audio_url && transitionData.audio_url !== "") {
-        // Store the next podcast ID to play after transition
-        setNextPodcastId(nextId);
-        setIsPlayingTransition(true);
-        
-        // Create a temporary podcast object for the transition
-        const transitionPodcast: Podcast = {
-          id: '',
-          title: 'Sofia Lane',
-          published_at: Date.now(),
-          duration_seconds: transitionData.duration_seconds,
-          audio_url: transitionData.audio_url,
-          image_url: transitionData.image_url || '',
-          transcript_url: transitionData.transcript_url || '',
-          favorite: undefined,
-          positive: undefined,
-          category: '',
-          totalRating: undefined,
-          subcategory: '',
-          podcast_id: undefined,
-          show: '',
-          episode: '',
-          duration: '',
-          added_at: ''
-        };
-        // Set the transition as current podcast
-        if (transitionPodcast.audio_url !== "" && !transitionPodcast.audio_url.startsWith(process.env.NEXT_PUBLIC_BACKEND_URL || '') && !transitionPodcast.audio_url.startsWith("blob")) {
-          transitionPodcast.audio_url = process.env.NEXT_PUBLIC_BACKEND_URL + "files/" + transitionPodcast.audio_url;
-        }
-        if (transitionPodcast.transcript_url !== "" && !transitionPodcast.transcript_url.startsWith(process.env.NEXT_PUBLIC_BACKEND_URL || '') && !transitionPodcast.transcript_url.startsWith("blob")) {
-          transitionPodcast.transcript_url = process.env.NEXT_PUBLIC_BACKEND_URL + "files/" + transitionPodcast.transcript_url;
-        }
-        if (transitionPodcast.image_url !== "" && !transitionPodcast.image_url.startsWith("http") && !transitionPodcast.image_url.startsWith('/api/') && !transitionPodcast.image_url.startsWith("blob")) {
-          transitionPodcast.image_url = process.env.NEXT_PUBLIC_BACKEND_URL + "files/" + transitionPodcast.image_url;
-        }
-        setCurrentPodcast(transitionPodcast);
-      }
-    } catch (error) {
-      console.error("Error loading transition:", error);
-      // If transition fails, just play the next podcast directly
-      setPodcastId(nextId);
-    }
+  // desktop-ts has no transition API — play next podcast directly
+  const loadAndPlayTransition = (_currentId: string, nextId: string) => {
+    setIsAutomaticTransition(true);
+    setPodcastId(nextId);
   };
 
   // Modify the useEffect for audio ended to handle transitions

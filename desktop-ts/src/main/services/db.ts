@@ -357,6 +357,13 @@ export class BriefcastDb {
 
   // ── Articles ─────────────────────────────────────────────────────────────────
 
+  articleExistsByUrl(url: string): boolean {
+    const row = this.db
+      .prepare<[string], { id: string }>("SELECT id FROM articles WHERE url = ? LIMIT 1")
+      .get(url);
+    return row != null;
+  }
+
   upsertArticle(
     article: IngestArticle,
     vector: number[],
@@ -500,6 +507,37 @@ export class BriefcastDb {
       .map(rowToArticle);
   }
 
+  /** FTS5 search filtered to financial topics (finance, markets, economy, etc.). */
+  financialNews(limit = 30): SearchResult[] {
+    const ftsQuery =
+      "finance OR stock OR market OR economy OR investment OR earnings OR trading OR cryptocurrency OR fintech OR banking OR \"interest rate\" OR \"federal reserve\" OR GDP OR inflation";
+    try {
+      const rows = this.db
+        .prepare<[string, number], ArticleRow & { rank: number }>(`
+          SELECT a.*, fts.rank
+          FROM articles_fts fts
+          JOIN articles a ON a.rowid = fts.rowid
+          WHERE articles_fts MATCH ?
+          ORDER BY fts.rank
+          LIMIT ?
+        `)
+        .all(ftsQuery, limit);
+      return rows.map((row) => ({ ...rowToArticle(row), keywordScore: 1 / (1 + Math.abs(row.rank)) }));
+    } catch {
+      // FTS fallback: LIKE search on common financial keywords
+      const rows = this.db
+        .prepare<[string, string, string, string, string, number], ArticleRow>(`
+          SELECT * FROM articles
+          WHERE title LIKE ? OR title LIKE ? OR title LIKE ?
+             OR summary LIKE ? OR content LIKE ?
+          ORDER BY published_at DESC
+          LIMIT ?
+        `)
+        .all("%finance%", "%stock%", "%market%", "%economy%", "%invest%", limit);
+      return rows.map((row) => ({ ...rowToArticle(row), keywordScore: 0.5 }));
+    }
+  }
+
   getRecommendations(limit = 100, fallbackImage = ""): RecommendationPodcast[] {
     return this.db
       .prepare<[number], ArticleRow>("SELECT * FROM articles ORDER BY published_at DESC LIMIT ?")
@@ -634,6 +672,62 @@ export class BriefcastDb {
         durationSeconds: row.duration_seconds,
         listenedAt: row.listened_at,
       }));
+  }
+
+  // ── Preference signals ────────────────────────────────────────────────────────
+
+  /** History items from the last N days where the user listened to ≥ minRatio of the episode. */
+  getEngagedHistory(days = 30, minCompletionRatio = 0.6): Array<{
+    source_name: string;
+    recommendation_id: string;
+    progress_seconds: number;
+    duration_seconds: number;
+    listened_at: number;
+  }> {
+    const since = Date.now() - days * 24 * 60 * 60 * 1000;
+    return this.db
+      .prepare<[number, number], {
+        source_name: string; recommendation_id: string;
+        progress_seconds: number; duration_seconds: number; listened_at: number;
+      }>(
+        `SELECT source_name, recommendation_id, progress_seconds, duration_seconds, listened_at
+         FROM history
+         WHERE listened_at >= ?
+           AND duration_seconds > 0
+           AND CAST(progress_seconds AS REAL) / duration_seconds >= ?
+         ORDER BY listened_at DESC LIMIT 200`
+      )
+      .all(since, minCompletionRatio);
+  }
+
+  /** source_type engagement counts for recently completed listens (joined with articles). */
+  getEngagedSourceTypes(days = 30): Array<{ source_type: string; count: number }> {
+    const since = Date.now() - days * 24 * 60 * 60 * 1000;
+    return this.db
+      .prepare<[number], { source_type: string; count: number }>(
+        `SELECT a.source_type, COUNT(*) AS count
+         FROM history h
+         JOIN articles a ON a.id = h.recommendation_id
+         WHERE h.listened_at >= ?
+           AND h.duration_seconds > 0
+           AND CAST(h.progress_seconds AS REAL) / h.duration_seconds >= 0.5
+         GROUP BY a.source_type
+         ORDER BY count DESC LIMIT 10`
+      )
+      .all(since);
+  }
+
+  /** source_name and subcategory from podcasts that received a positive rating. */
+  getPositivelyRatedSources(): Array<{ source_name: string; subcategory: string }> {
+    return this.db
+      .prepare<[], { source_name: string; subcategory: string }>(
+        `SELECT p.source_name, p.subcategory
+         FROM ratings r
+         JOIN podcasts p ON p.id = r.podcast_id
+         WHERE r.rating > 0
+         LIMIT 50`
+      )
+      .all();
   }
 
   // ── Downloads ─────────────────────────────────────────────────────────────────

@@ -23,7 +23,7 @@ function loadEnvironmentFile(): void {
 
   for (const filePath of candidates) {
     if (!fs.existsSync(filePath)) continue;
-    loadDotenv({ path: filePath, override: true });
+    loadDotenv({ path: filePath, override: false }); // env vars set by npm scripts take precedence over .env
     console.log(`[env] loaded ${filePath}`);
     return;
   }
@@ -104,30 +104,64 @@ async function createWindow(): Promise<void> {
   }
 }
 
+function scheduleNewsSyncEvery6Hours(svc: BriefcastAppService): void {
+  const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+
+  async function runSync(): Promise<void> {
+    console.log("[news-scheduler] running 6-hour news sync + embed…");
+    try {
+      const result = await svc.syncNews();
+      console.log(`[news-scheduler] sync done — fetched:${result.fetched} inserted:${result.inserted} skipped:${result.skipped}`);
+    } catch (err) {
+      console.error("[news-scheduler] sync failed:", err);
+    }
+  }
+
+  // Initial sync 30 seconds after startup so the app is fully ready
+  setTimeout(runSync, 30_000);
+
+  // Then every 6 hours
+  setInterval(runSync, SIX_HOURS_MS);
+}
+
 function scheduleDailyGeneration(svc: BriefcastAppService): void {
-  // Trigger daily podcast generation at 10:00am each day
-  function msUntil10am(): number {
+  function msUntilHour(hour: number, minute = 0): number {
     const now = new Date();
     const target = new Date(now);
-    target.setHours(10, 0, 0, 0);
+    target.setHours(hour, minute, 0, 0);
     if (target <= now) target.setDate(target.getDate() + 1);
     return target.getTime() - now.getTime();
   }
 
-  function scheduleNext(): void {
+  // 8:00am — generate the daily briefing
+  function scheduleBriefing(): void {
     setTimeout(async () => {
-      console.log("[scheduler] 10am — triggering daily podcast generation");
+      console.log("[scheduler] 8:00am — generating daily briefing");
       try {
         await svc.forceDailyPodcast();
         await svc.cleanupOldPodcastFiles();
       } catch (err) {
-        console.error("[scheduler] daily generation failed:", err);
+        console.error("[scheduler] daily briefing failed:", err);
       }
-      scheduleNext();
-    }, msUntil10am());
+      scheduleBriefing();
+    }, msUntilHour(8, 0));
   }
 
-  scheduleNext();
+  // 8:30am — refresh topic preferences from listening behavior
+  function schedulePreferenceRefresh(): void {
+    setTimeout(async () => {
+      console.log("[scheduler] 8:30am — refreshing topic preferences from behavior");
+      try {
+        await svc.refreshTopicsFromBehavior();
+      } catch (err) {
+        console.error("[scheduler] preference refresh failed:", err);
+      }
+      schedulePreferenceRefresh();
+    }, msUntilHour(8, 30));
+  }
+
+  scheduleBriefing();
+  schedulePreferenceRefresh();
 }
 
 function registerIpcHandlers(): void {
@@ -143,6 +177,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("news:preference-search", (_e, description: string, limit?: number) =>
     service.preferenceSearch(description, limit)
   );
+  ipcMain.handle("news:financial", (_e, limit?: number) => service.getFinancialNews(limit));
 
   // ── Text briefing ─────────────────────────────────────────────────────────
   ipcMain.handle("briefing:generate", () => service.generateDailyBriefing());
@@ -224,6 +259,7 @@ app
 
     registerIpcHandlers();
     await createWindow();
+    scheduleNewsSyncEvery6Hours(service);
     scheduleDailyGeneration(service);
 
     app.on("activate", async () => {

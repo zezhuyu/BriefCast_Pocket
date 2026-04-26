@@ -50,7 +50,7 @@ export default function MiniPlayer() {
           onClick={() => router.push(`/?podcast=${currentPodcast.id}`)}
         >
           <Image
-            src={currentPodcast.image_url?.startsWith('http') || currentPodcast.image_url?.startsWith('/api/') ? currentPodcast.image_url : process.env.NEXT_PUBLIC_BACKEND_URL + `files/${currentPodcast.image_url}`}
+            src={currentPodcast.image_url?.startsWith('http') || currentPodcast.image_url?.startsWith('file://') || currentPodcast.image_url?.startsWith('data:') || currentPodcast.image_url?.startsWith('/api/') ? currentPodcast.image_url : `https://picsum.photos/seed/${currentPodcast.id}/300/300`}
             alt={currentPodcast.title}
             fill
             unoptimized

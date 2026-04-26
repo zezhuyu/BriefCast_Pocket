@@ -33,6 +33,14 @@ export interface SourceSettings {
   hackerNewsEnabled: boolean;
   redditEnabled: boolean;
   redditSubreddits: string[];
+  devToEnabled: boolean;
+  devToTags: string[];
+  lobstersEnabled: boolean;
+  googleNewsEnabled: boolean;
+  googleNewsTopics: string[];
+  githubTrendingEnabled: boolean;
+  slashdotEnabled: boolean;
+  productHuntEnabled: boolean;
 }
 
 export interface UserPreferenceSettings {
@@ -246,6 +254,7 @@ export interface RendererBridge {
   syncNews(): Promise<SyncResult>;
   searchArticles(query: string, mode: SearchMode, limit?: number): Promise<SearchResult[]>;
   preferenceSearch(description: string, limit?: number): Promise<SearchResult[]>;
+  getFinancialNews(limit?: number): Promise<SearchResult[]>;
 
   // Briefing (text)
   generateDailyBriefing(): Promise<GenerateBriefingResult>;
@@ -320,7 +329,15 @@ export const DEFAULT_SETTINGS: AppSettings = {
     ],
     hackerNewsEnabled: true,
     redditEnabled: true,
-    redditSubreddits: ["worldnews", "technology", "business"]
+    redditSubreddits: ["worldnews", "technology", "business"],
+    devToEnabled: true,
+    devToTags: ["news", "technology", "webdev", "ai", "programming"],
+    lobstersEnabled: true,
+    googleNewsEnabled: true,
+    googleNewsTopics: ["technology", "business", "world", "science"],
+    githubTrendingEnabled: true,
+    slashdotEnabled: true,
+    productHuntEnabled: true
   },
   preferences: {
     topics: ["technology", "business", "world"],

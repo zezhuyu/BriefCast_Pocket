@@ -65,3 +65,8 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+AGENTS.md
+CLAUDE.md
+.claude/
+.omx/

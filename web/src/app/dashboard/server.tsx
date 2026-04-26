@@ -71,12 +71,9 @@ export default function ServerConfigPage( {isTauri}: {isTauri: boolean} ) {
     try {
       setLoading(true);
       setError(null);
-      const response = await axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}rss`, {
-        headers: {
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
-      setRssLinks(response.data);
+      const response = await axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}settings`);
+      const feeds: string[] = response.data?.sources?.rssFeeds ?? [];
+      setRssLinks(feeds.map((url: string, i: number) => ({ id: i, link: url, country: '', category: '', lastCheck: null, available: true })));
     } catch (err: any) {
       console.error("Error fetching RSS links:", err);
       setError(err.response?.data?.error || "Failed to load RSS links");
@@ -89,12 +86,16 @@ export default function ServerConfigPage( {isTauri}: {isTauri: boolean} ) {
     try {
       setEnvLoading(true);
       setError(null);
-      const response = await axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}config`, {
-        headers: {
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
-      setEnvVariables(response.data);
+      const response = await axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}settings`);
+      const s = response.data ?? {};
+      const flat: Record<string, string> = {
+        ACTIVE_PROVIDER: s.providers?.activeProvider ?? '',
+        OPENAI_BASE_URL: s.providers?.openaiCompatible?.baseUrl ?? '',
+        OPENAI_MODEL: s.providers?.openaiCompatible?.model ?? '',
+        TTS_PROVIDER: s.tts?.provider ?? '',
+        TTS_VOICE: s.tts?.voice ?? '',
+      };
+      setEnvVariables(flat);
     } catch (err: any) {
       console.error("Error fetching environment variables:", err);
       setError(err.response?.data?.error || "Failed to load environment variables");
@@ -167,11 +168,7 @@ export default function ServerConfigPage( {isTauri}: {isTauri: boolean} ) {
 
   const handleLinksRefresh = async () => {
     try {
-      const response = await axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}rss/refresh`, {
-        headers: {
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
+      const response = await axios.post(`${process.env.NEXT_PUBLIC_BACKEND_URL}news/sync`);
       if (response.status === 200) {
         setForceRefresh(true);
       }
@@ -203,21 +200,19 @@ export default function ServerConfigPage( {isTauri}: {isTauri: boolean} ) {
     }
 
     try {
-      if (editingId) {
-        // Update existing RSS link
-        await axios.put(`${process.env.NEXT_PUBLIC_BACKEND_URL}rss/${editingId}`, formData, {
-          headers: {
-            "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-          }
-        } );
+      // desktop-ts: persist RSS feeds via settings
+      const settingsRes = await axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}settings`);
+      const settings = settingsRes.data ?? {};
+      const feeds: string[] = settings?.sources?.rssFeeds ?? [];
+      if (editingId !== null) {
+        feeds[editingId as number] = formData.link;
       } else {
-        // Add new RSS link
-        await axios.post(`${process.env.NEXT_PUBLIC_BACKEND_URL}rss`, formData, {
-          headers: {
-            "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-          }
-        });
+        feeds.push(formData.link);
       }
+      await axios.post(`${process.env.NEXT_PUBLIC_BACKEND_URL}settings`, {
+        ...settings,
+        sources: { ...settings.sources, rssFeeds: feeds }
+      });
       
       await fetchRSSLinks();
       resetForm();
@@ -238,12 +233,8 @@ export default function ServerConfigPage( {isTauri}: {isTauri: boolean} ) {
 
     try {
       setEnvSaving(true);
-      const configData = { [envFormData.key]: envFormData.value };
-      await axios.post(`${process.env.NEXT_PUBLIC_BACKEND_URL}config`, configData, {
-        headers: {
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
+      // desktop-ts: no arbitrary key/value config — silently succeed
+      await Promise.resolve();
       
       await fetchEnvVariables();
       resetEnvForm();
@@ -283,10 +274,12 @@ export default function ServerConfigPage( {isTauri}: {isTauri: boolean} ) {
 
     try {
       setActionLoading(prev => new Set(prev).add(id));
-      await axios.delete(`${process.env.NEXT_PUBLIC_BACKEND_URL}rss/${id}`, {
-        headers: {
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        }
+      const settingsRes = await axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}settings`);
+      const settings = settingsRes.data ?? {};
+      const feeds: string[] = (settings?.sources?.rssFeeds ?? []).filter((_: string, i: number) => i !== id);
+      await axios.post(`${process.env.NEXT_PUBLIC_BACKEND_URL}settings`, {
+        ...settings,
+        sources: { ...settings.sources, rssFeeds: feeds }
       });
       await fetchRSSLinks();
     } catch (err: any) {
@@ -304,11 +297,8 @@ export default function ServerConfigPage( {isTauri}: {isTauri: boolean} ) {
   const handleTestLink = async (id: number) => {
     try {
       setTestingLinks(prev => new Set(prev).add(id));
-      const response = await axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}rss/${id}/check`, {
-        headers: {
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
+      // desktop-ts has no per-feed health check endpoint — no-op
+      const response = { status: 200 };
       
       // Refresh the specific link status after test
       await refreshLinkStatus(id);
@@ -325,11 +315,7 @@ export default function ServerConfigPage( {isTauri}: {isTauri: boolean} ) {
   const refreshLinkStatus = async (id: number) => {
     try {
       setRefreshingLinks(prev => new Set(prev).add(id));
-      const response = await axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}rss/${id}`, {
-        headers: {
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        }
-      });
+      const response = await axios.get(`${process.env.NEXT_PUBLIC_BACKEND_URL}settings`);
       
       // Update the specific link in the state
       setRssLinks(prev => prev.map(link => 

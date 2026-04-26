@@ -3,7 +3,6 @@ import { JSX, useEffect, useState } from "react";
 import AccountPage from "./account";
 import ServerConfigPage from "./server";
 import Link from "next/link";
-import { getName } from "@tauri-apps/api/app";
 
 interface DashboardTab {
   id: string;
@@ -40,24 +39,7 @@ export default function DashboardPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<string>('account');
   const [username, setUsername] = useState<string>("");
-  const [isTauri, setIsTauri] = useState<boolean>(false);
-
-  useEffect(() => {
-    const TauriAvailable = async () => {
-      try {
-        await getName();
-        return true;
-      } catch {
-        return false; 
-      }
-    }
-
-    TauriAvailable().then((tauri) => {
-      if (tauri) {
-        setIsTauri(true)
-      }
-    })
-  }, []);
+  const isTauri = false;
 
   const renderContent = () => {
     switch (activeTab) {
@@ -73,15 +55,7 @@ export default function DashboardPage() {
   const handleSignOut = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "signout", {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-      }
-    });
-    localStorage.removeItem('authToken');
-    window.location.href = '/signin';
+    window.location.href = '/';
   }
 
   return (

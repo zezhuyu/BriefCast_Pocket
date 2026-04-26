@@ -8,6 +8,18 @@ import { localEmbedText } from "./embeddings";
 const DEFAULT_SYSTEM_PROMPT =
   "You are a concise daily news editor. Create clear, factual summaries, avoid hype, and preserve key details.";
 
+// Track CLI provider rate-limit expiry (module-level, survives across calls in the same session)
+const cliRateLimitedUntil: Record<string, number> = {};
+
+export function getProviderStatus(): { rateLimited: boolean; provider: string; until?: number } {
+  const entries = Object.entries(cliRateLimitedUntil).filter(([, until]) => Date.now() < until);
+  if (entries.length > 0) {
+    const [provider, until] = entries[0];
+    return { rateLimited: true, provider, until };
+  }
+  return { rateLimited: false, provider: "ok" };
+}
+
 function ensureTrailingSlash(baseUrl: string): string {
   return baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
 }
@@ -87,6 +99,16 @@ function runCliCommand(command: string, argsTemplate: string, prompt: string): P
     child.on("close", (code) => {
       clearTimeout(timeout);
       if (code !== 0) {
+        const combined = (stderr + " " + stdout).toLowerCase();
+        if (combined.includes("usage limit") || combined.includes("rate limit") || combined.includes("quota exceeded")) {
+          // Rate-limited — suppress further calls for 2 hours
+          const until = Date.now() + 2 * 60 * 60 * 1000;
+          cliRateLimitedUntil[command] = until;
+          const err = new Error(`CLI_RATE_LIMITED:${command}`);
+          (err as any).rateLimited = true;
+          reject(err);
+          return;
+        }
         reject(new Error(`${command} exited with code ${code}: ${stderr || "no stderr"}`));
         return;
       }
@@ -207,8 +229,29 @@ export async function generateText(settings: AppSettings, prompt: string, system
   }
   if (provider === "codex-cli" || provider === "claude-cli") {
     const cfg = provider === "codex-cli" ? settings.providers.codexCli : settings.providers.claudeCli;
+    const until = cliRateLimitedUntil[cfg.command] ?? 0;
+    if (Date.now() < until) {
+      // Rate-limited — fall back to openai-compatible if configured
+      const oai = settings.providers.openaiCompatible;
+      if (oai.apiKey && oai.baseUrl) {
+        console.warn(`[providers] ${provider} rate-limited, falling back to openai-compatible`);
+        return callOpenAiCompatible(settings, prompt, systemPrompt);
+      }
+      throw new Error(`${provider} is rate-limited and no openai-compatible fallback is configured`);
+    }
     console.log(`[providers] ${provider} command:`, cfg.command);
-    return callCliProvider(settings, provider, prompt);
+    try {
+      return await callCliProvider(settings, provider, prompt);
+    } catch (err) {
+      if ((err as any).rateLimited) {
+        const oai = settings.providers.openaiCompatible;
+        if (oai.apiKey && oai.baseUrl) {
+          console.warn(`[providers] ${provider} hit rate limit, switching to openai-compatible fallback`);
+          return callOpenAiCompatible(settings, prompt, systemPrompt);
+        }
+      }
+      throw err;
+    }
   }
 
   throw new Error(`Unsupported provider: ${provider satisfies never}`);

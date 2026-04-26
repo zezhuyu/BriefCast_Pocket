@@ -3,7 +3,7 @@ import Parser from "rss-parser";
 export interface IngestArticle {
   title: string;
   url: string;
-  sourceType: "rss" | "hackernews" | "reddit";
+  sourceType: "rss" | "hackernews" | "reddit" | "devto" | "lobsters" | "googlenews" | "github-trending" | "slashdot" | "producthunt";
   sourceName: string;
   summary: string;
   content: string;
@@ -105,7 +105,7 @@ function isHttpUrl(url: string): boolean {
   return /^https?:\/\//.test(url);
 }
 
-async function fetchOneFeed(feedUrl: string, maxPerFeed: number): Promise<IngestArticle[]> {
+export async function fetchOneFeed(feedUrl: string, maxPerFeed: number): Promise<IngestArticle[]> {
   const feed = await parser.parseURL(feedUrl);
   const result: IngestArticle[] = [];
   for (const item of (feed.items ?? []).slice(0, maxPerFeed)) {
@@ -307,6 +307,175 @@ export async function enrichWithArticleImages(articles: IngestArticle[]): Promis
   }
 
   return articles;
+}
+
+// ── Dev.to ─────────────────────────────────────────────────────────────────────
+
+export async function fetchDevTo(tags: string[], perTag = 15): Promise<IngestArticle[]> {
+  type DevToArticle = {
+    id: number;
+    title: string;
+    url: string;
+    description?: string;
+    body_markdown?: string;
+    cover_image?: string | null;
+    social_image?: string | null;
+    published_at?: string;
+    tag_list?: string[];
+    user?: { name?: string };
+  };
+
+  const all: IngestArticle[] = [];
+
+  for (const tag of tags) {
+    try {
+      const apiUrl = `https://dev.to/api/articles?tag=${encodeURIComponent(tag)}&per_page=${perTag}&state=fresh`;
+      const articles = await fetchJson<DevToArticle[]>(apiUrl, {
+        headers: { "User-Agent": "BriefCastDesktopTS/0.1" }
+      });
+
+      for (const a of articles) {
+        if (!a.title || !a.url || !isHttpUrl(a.url)) continue;
+        all.push({
+          title: a.title,
+          url: a.url,
+          sourceType: "devto",
+          sourceName: `Dev.to / #${tag}`,
+          summary: safeSummary(a.description),
+          content: safeSummary(a.body_markdown ?? a.description),
+          publishedAt: toTimestamp(a.published_at),
+          imageUrl: firstHttp(a.cover_image ?? undefined, a.social_image ?? undefined)
+        });
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return all;
+}
+
+// ── Lobste.rs ──────────────────────────────────────────────────────────────────
+
+export async function fetchLobsters(limit = 30): Promise<IngestArticle[]> {
+  type LobstersItem = {
+    short_id: string;
+    title: string;
+    url?: string;
+    comments_url?: string;
+    description?: string;
+    created_at?: string;
+    tags?: string[];
+    submitter_user?: { username?: string };
+  };
+
+  type LobstersResponse = { stories?: LobstersItem[] } | LobstersItem[];
+
+  const raw = await fetchJson<LobstersResponse>("https://lobste.rs/hottest.json", {
+    headers: { "User-Agent": "BriefCastDesktopTS/0.1" }
+  });
+
+  const items: LobstersItem[] = Array.isArray(raw) ? raw : ((raw as { stories?: LobstersItem[] }).stories ?? []);
+
+  return items
+    .slice(0, limit)
+    .filter((item) => item.title && (item.url || item.comments_url))
+    .map((item) => ({
+      title: item.title,
+      url: item.url && isHttpUrl(item.url) ? item.url : (item.comments_url ?? ""),
+      sourceType: "lobsters" as const,
+      sourceName: "Lobste.rs",
+      summary: safeSummary(item.description),
+      content: safeSummary(item.description ?? item.title),
+      publishedAt: toTimestamp(item.created_at),
+      imageUrl: undefined
+    }))
+    .filter((a) => isHttpUrl(a.url));
+}
+
+// ── Google News RSS ────────────────────────────────────────────────────────────
+// Uses Google News's public RSS search endpoint — no API key required.
+
+export async function fetchGoogleNews(topics: string[], perTopic = 15): Promise<IngestArticle[]> {
+  const all: IngestArticle[] = [];
+
+  for (const topic of topics) {
+    try {
+      const rssUrl = `https://news.google.com/rss/search?q=${encodeURIComponent(topic)}&hl=en-US&gl=US&ceid=US:en`;
+      const articles = await fetchOneFeed(rssUrl, perTopic);
+      // Override sourceType since fetchOneFeed labels everything "rss"
+      for (const a of articles) {
+        all.push({ ...a, sourceType: "googlenews", sourceName: `Google News / ${topic}` });
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return all;
+}
+
+// ── GitHub Trending ────────────────────────────────────────────────────────────
+// Scrapes GitHub's public trending page — no API key or auth required.
+// Surfaces what the developer community is excited about as "tech news".
+
+export async function fetchGithubTrending(limit = 25): Promise<IngestArticle[]> {
+  const res = await fetch("https://github.com/trending?since=daily", {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml"
+    },
+    signal: AbortSignal.timeout(10000)
+  });
+  if (!res.ok) throw new Error(`GitHub trending HTTP ${res.status}`);
+  const html = await res.text();
+
+  // Repo slugs are in <h2> tags: href="/owner/repo"
+  const h2Pattern = /<h2[^>]*>[\s\S]*?href="\/([\w.-]+\/[\w.-]+)"/g;
+  const slugMatches = [...html.matchAll(h2Pattern)].map(m => m[1]);
+
+  // Descriptions are in <p class="col-9 ...">
+  const descPattern = /<p[^>]*col-9[^>]*>([\s\S]*?)<\/p>/g;
+  const descs = [...html.matchAll(descPattern)].map(m =>
+    m[1].trim().replace(/\s+/g, " ")
+  );
+
+  const out: IngestArticle[] = [];
+  for (let i = 0; i < Math.min(slugMatches.length, limit); i++) {
+    const slug = slugMatches[i];
+    // Skip GitHub-internal navigation paths
+    if (slug.startsWith("sponsors/") || slug.startsWith("apps/") || slug.startsWith("trending/")) continue;
+    const url = `https://github.com/${slug}`;
+    const desc = descs[i] ?? "";
+    const title = `${slug}${desc ? ` — ${desc.slice(0, 120)}` : ""}`;
+    out.push({
+      title,
+      url,
+      sourceType: "github-trending",
+      sourceName: "GitHub Trending",
+      summary: desc,
+      content: desc || slug,
+      publishedAt: Date.now(),
+      imageUrl: undefined
+    });
+  }
+  return out;
+}
+
+// ── Slashdot ───────────────────────────────────────────────────────────────────
+// Long-running tech/science/politics community news. Free public RSS.
+
+export async function fetchSlashdot(limit = 20): Promise<IngestArticle[]> {
+  const articles = await fetchOneFeed("https://rss.slashdot.org/Slashdot/slashdotMain", limit);
+  return articles.map(a => ({ ...a, sourceType: "slashdot" as const, sourceName: "Slashdot" }));
+}
+
+// ── ProductHunt ────────────────────────────────────────────────────────────────
+// Latest product launches — free public RSS, good signal for tech/startup news.
+
+export async function fetchProductHunt(limit = 25): Promise<IngestArticle[]> {
+  const articles = await fetchOneFeed("https://www.producthunt.com/feed", limit);
+  return articles.map(a => ({ ...a, sourceType: "producthunt" as const, sourceName: "ProductHunt" }));
 }
 
 export function dedupeArticles(articles: IngestArticle[]): IngestArticle[] {

@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import MiniPlayer from "@/components/MiniPlayer";
 import { usePlayer } from "@/context/PlayerContext";
 import { ReactNode, ReactElement, JSXElementConstructor, ReactPortal } from 'react';
-import { getName } from "@tauri-apps/api/app";
 
 interface Podcast {
   id: string;
@@ -61,7 +60,15 @@ const toDate = (timestamp: string | number): string => {
   if (diffDays < 365) return `${diffMonths} month${diffMonths !== 1 ? 's' : ''} ago`;
   return `${diffYears} year${diffYears !== 1 ? 's' : ''} ago`;
 };
-// Mock recommendation API cal
+// Normalize camelCase API response fields to snake_case expected by UI
+const normalizeItem = (item: any) => ({
+  ...item,
+  image_url: item.image_url || item.imageUrl || '',
+  published_at: item.published_at ?? item.publishedAt ?? 0,
+  duration_seconds: item.duration_seconds ?? item.estimatedDurationSeconds ?? 0,
+  audio_url: item.audio_url || item.audioUrl || '',
+  transcript_url: item.transcript_url || item.transcriptUrl || '',
+});
 
 export default function LibraryPage() {
   const [searchTerm, setSearchTerm] = useState("");
@@ -83,26 +90,8 @@ export default function LibraryPage() {
   const [summaryList, setSummaryList] = useState<string[]>([]);
   const [isCreatingSummary, setIsCreatingSummary] = useState(false);
 
-  const [tauri, setTauri] = useState(false)
-  
   // Load recommendations on mount
   useEffect(() => {
-
-    const isTauri = async () => {
-      try {
-        await getName();
-        return true;
-      } catch {
-        return false;
-      }
-    }
-
-    isTauri().then((isTauri) => {
-      if (isTauri) {
-        setTauri(true)
-      }
-    })
-    
     const loadRecommendations = async () => {
       
       try {
@@ -123,13 +112,8 @@ export default function LibraryPage() {
     return new Promise(resolve => {
       setTimeout(async () => {
         try {
-          const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "recommendations", {
+          const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "library/recommendations", {
             method: "GET",
-            headers: {
-              "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-            }
-            // cache: 'no-store',
-            // credentials: 'same-origin'
           })
 
           if (!response.ok) {
@@ -137,8 +121,7 @@ export default function LibraryPage() {
           }
 
           const data = await response.json();
-          // Ensure data is an array
-          setRecommendations(Array.isArray(data) ? data : []);
+          setRecommendations(Array.isArray(data) ? data.map(normalizeItem) : []);
         } catch (error) {
           console.error("Error fetching recommendations:", error);
           // Set empty array on error
@@ -158,11 +141,6 @@ export default function LibraryPage() {
       setTimeout(async () => {
         const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "history", {
           method: "GET",
-          headers: {
-            "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-          }
-          // cache: 'no-store',
-          // credentials: 'same-origin'
         })
 
         const data = await response.json();
@@ -176,17 +154,12 @@ export default function LibraryPage() {
     setIsLoadingHotTrending(true);
     return new Promise(resolve => {
       setTimeout(async () => {
-        const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "trending", {
+        const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "library/trending", {
           method: "GET",
-          headers: {
-            "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-          }
-          // cache: 'no-store',
-          // credentials: 'same-origin'
         })
 
         const data = await response.json();
-        setHotTrending(data);
+        setHotTrending(Array.isArray(data) ? data.map(normalizeItem) : []);
         setIsLoadingHotTrending(false);
         resolve(data);
       }, 500);
@@ -196,13 +169,8 @@ export default function LibraryPage() {
   const searchPodcasts = async () => {
     if (searchTerm.length <= 0) return;
 
-    const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "search?q=" + searchTerm , {
+    const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "news/search?query=" + encodeURIComponent(searchTerm) + "&mode=hybrid", {
       method: "GET",
-      headers: {
-        "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-      }
-      // cache: 'no-store',
-      // credentials: 'same-origin'
     });
     const data = await response.json();
     setFilteredPodcasts(data);
@@ -239,14 +207,13 @@ export default function LibraryPage() {
     try {
       console.log('Creating summary with podcast IDs:', summaryList);
       
-      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}summary`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL}podcast/generate-summary`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
         },
         body: JSON.stringify({
-          pids: summaryList
+          podcastIds: summaryList
         }),
         cache: 'no-cache',
         credentials: 'same-origin'
@@ -296,7 +263,7 @@ export default function LibraryPage() {
       >
         <div className="relative aspect-square">
           <Image
-            src={podcast.image_url?.startsWith('http') ? podcast.image_url : process.env.NEXT_PUBLIC_BACKEND_URL + `files/${podcast.image_url}`}
+            src={podcast.image_url?.startsWith('http') || podcast.image_url?.startsWith('file://') || podcast.image_url?.startsWith('data:') ? podcast.image_url : (podcast.imageUrl || `https://picsum.photos/seed/${podcast.id}/300/300`)}
             alt={podcast.title?.toString() || ''}
             fill
             unoptimized
@@ -358,7 +325,7 @@ export default function LibraryPage() {
     >
       <div className="relative h-32">
         <Image
-          src={item.image_url?.startsWith('http') ? item.image_url : process.env.NEXT_PUBLIC_BACKEND_URL + `files/${item.image_url}`}
+          src={item.image_url?.startsWith('http') || item.image_url?.startsWith('file://') || item.image_url?.startsWith('data:') ? item.image_url : (item.imageUrl || `https://picsum.photos/seed/${item.id}/300/300`)}
           alt={item.title}
           fill
           unoptimized
@@ -394,7 +361,7 @@ export default function LibraryPage() {
       >
         <div className="relative h-32">
           <Image
-            src={podcast.image_url?.startsWith('http') ? podcast.image_url : process.env.NEXT_PUBLIC_BACKEND_URL + `files/${podcast.image_url}`}
+            src={podcast.image_url?.startsWith('http') || podcast.image_url?.startsWith('file://') || podcast.image_url?.startsWith('data:') ? podcast.image_url : (podcast.imageUrl || `https://picsum.photos/seed/${podcast.id}/300/300`)}
             alt={podcast.title}
             fill
             unoptimized
@@ -449,11 +416,8 @@ export default function LibraryPage() {
   // Add new function to fetch trending items
   const fetchTrending = async () => {
     try {
-      const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "get_trending", {
+      const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "library/trending", {
         method: "GET",
-        headers: {
-          "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-        }
       });
       const data = await response.json();
       setTrendingItems(data);
@@ -463,7 +427,7 @@ export default function LibraryPage() {
   };
 
   return (
-    <div className={`min-h-screen bg-gradient-to-br from-indigo-900/90 to-purple-900/90 text-white ${tauri ? 'mt-8' : ''}`}>
+    <div className={`min-h-screen bg-gradient-to-br from-indigo-900/90 to-purple-900/90 text-white`}>
       <header className="bg-white/10 backdrop-blur-md shadow-lg">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
           <div className="flex items-center gap-2">
@@ -537,7 +501,7 @@ export default function LibraryPage() {
                     >
                       <div className="relative w-10 h-10 flex-shrink-0">
                         <Image
-                          src={item.image_url?.startsWith('http') ? item.image_url : process.env.NEXT_PUBLIC_BACKEND_URL + `files/${item.image_url}`}
+                          src={item.image_url?.startsWith('http') || item.image_url?.startsWith('file://') || item.image_url?.startsWith('data:') ? item.image_url : (item.imageUrl || `https://picsum.photos/seed/${item.id}/300/300`)}
                           alt={item.title?.toString() || ''}
                           fill
                           unoptimized

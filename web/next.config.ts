@@ -11,7 +11,7 @@ const nextConfig: NextConfig = {
   output: process.env.EXPORT_MODE === 'true' ? 'export' : 'standalone',
   trailingSlash: process.env.EXPORT_MODE === 'true' ? true : false,
   images: {
-    domains: ['your-backend.com'],
+    domains: ['your-backend.com', 'picsum.photos'],
     loader: 'custom',
     loaderFile: './src/utils/imageLoader.js',
   },

@@ -6,7 +6,6 @@ import { useRouter } from "next/navigation";
 import MiniPlayer from "@/components/MiniPlayer";
 import { usePlayer } from "@/context/PlayerContext";
 import { useEffect } from "react";
-import { getName } from "@tauri-apps/api/app";
 // Sample history data - in a real app, this would come from a database or API
 
 // Group history by month
@@ -86,19 +85,12 @@ export default function HistoryPage() {
   const router = useRouter();
   const [history, setHistory] = useState<any[]>([]);
   const { setCurrentPodcast, togglePlayPause, setAutoPlay } = usePlayer();
-  const [tauri, setTauri] = useState(false)
-
   const fetchHistory = async (): Promise<any[]> => {
     return new Promise(resolve => {
       setTimeout(async () => {
         const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "history", {
           method: "GET",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-          },
-          // credentials: 'same-origin'
-        });  
+        });
         const data = await response.json();
         resolve(data);
       }, 500);
@@ -106,20 +98,6 @@ export default function HistoryPage() {
   }
 
   useEffect(() => {
-    const isTauri = async () => {
-      try {
-        await getName();
-        return true;
-      } catch {
-        return false; 
-      }
-    }
-
-    isTauri().then((isTauri) => {
-      if (isTauri) {
-        setTauri(true)
-      }
-    })
     fetchHistory().then((data: any[]) => {
       setHistory(data);
     });
@@ -153,7 +131,7 @@ export default function HistoryPage() {
     >
       <div className="relative aspect-square">
         <Image
-          src={item.image_url?.startsWith('http') ? item.image_url : process.env.NEXT_PUBLIC_BACKEND_URL + `files/${item.image_url}`}
+          src={item.image_url?.startsWith('http') || item.image_url?.startsWith('file://') || item.image_url?.startsWith('data:') ? item.image_url : `https://picsum.photos/seed/${String(item.id)}/300/300`}
           alt={item.title?.toString() || ''}
           fill
           className="object-cover"
@@ -177,7 +155,7 @@ export default function HistoryPage() {
   );
   
   return (
-    <div className={`min-h-screen bg-gradient-to-br from-indigo-900/90 to-purple-900/90 text-white ${tauri ? 'mt-8' : ''}`}>
+    <div className={`min-h-screen bg-gradient-to-br from-indigo-900/90 to-purple-900/90 text-white`}>
       <header className="bg-white/10 backdrop-blur-md shadow-lg">
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
           <div className="flex items-center gap-2">

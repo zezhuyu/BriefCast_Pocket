@@ -41,6 +41,9 @@ const api: RendererBridge = {
   preferenceSearch(description: string, limit?: number): Promise<SearchResult[]> {
     return ipcRenderer.invoke("news:preference-search", description, limit);
   },
+  getFinancialNews(limit?: number): Promise<SearchResult[]> {
+    return ipcRenderer.invoke("news:financial", limit);
+  },
 
   // Text briefing
   generateDailyBriefing(): Promise<GenerateBriefingResult> {

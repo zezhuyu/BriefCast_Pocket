@@ -50,22 +50,11 @@ const Playlist: React.FC<PlaylistProps> = ({ onSelect }) => {
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
   
   useEffect(() => {
-    if(currentPlaylist && !currentPlaylist.hasOwnProperty("podcasts")) {
-      const getPlaylists = async () => {
-        const response = await fetch(process.env.NEXT_PUBLIC_BACKEND_URL + "playlist/" + currentPlaylist.id, {
-          method: "GET",
-          headers: {
-            "Authorization": `Bearer ${localStorage.getItem('authToken')}`
-          }
-        });
-        const data = await response.json();
-
-        setCurrentPlaylist({
-          ...currentPlaylist,
-          podcasts: data
-        });
+    if (currentPlaylist && !currentPlaylist.podcasts && playlists) {
+      const full = playlists.find(p => p.id === currentPlaylist.id);
+      if (full) {
+        setCurrentPlaylist(full);
       }
-      getPlaylists();
     }
   }, [currentPlaylist])
 
@@ -182,7 +171,7 @@ const Playlist: React.FC<PlaylistProps> = ({ onSelect }) => {
               >
                 <div className="relative w-10 h-10 rounded-md overflow-hidden flex-shrink-0">
                   <Image
-                    src={(podcast.image_url.startsWith('http') || podcast.image_url.startsWith('/api/') || podcast.image_url.startsWith('blob:') || podcast.image_url.startsWith('data:image')) ? podcast.image_url : process.env.NEXT_PUBLIC_BACKEND_URL + 'files/' + podcast.image_url}
+                    src={(podcast.image_url.startsWith('http') || podcast.image_url.startsWith('file://') || podcast.image_url.startsWith('/api/') || podcast.image_url.startsWith('blob:') || podcast.image_url.startsWith('data:')) ? podcast.image_url : `https://picsum.photos/seed/${podcast.id}/300/300`}
                     alt={podcast.title}
                     fill
                     className="object-cover"

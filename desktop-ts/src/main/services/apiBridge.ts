@@ -1,6 +1,7 @@
 import http, { IncomingMessage, ServerResponse } from "node:http";
 import { URL } from "node:url";
 import { BriefcastAppService } from "./appService";
+import { getProviderStatus } from "./providers";
 import {
   AppSettings,
   DownloadSaveInput,
@@ -451,6 +452,13 @@ export class ApiBridgeServer {
       return;
     }
 
+    if (url.pathname === "/api/news/financial" && req.method === "GET") {
+      const limit = Number(url.searchParams.get("limit") ?? "30");
+      const result = await this.service.getFinancialNews(Number.isFinite(limit) ? limit : 30);
+      this.writeJson(res, 200, result);
+      return;
+    }
+
     if (url.pathname === "/api/briefings/generate" && req.method === "POST") {
       const result = await this.service.generateDailyBriefing();
       this.writeJson(res, 200, result);
@@ -467,6 +475,13 @@ export class ApiBridgeServer {
     if (url.pathname === "/api/library/recommendations" && req.method === "GET") {
       const limit = Number(url.searchParams.get("limit") ?? "100");
       const result = await this.service.getRecommendations(Number.isFinite(limit) ? limit : 100);
+      this.writeJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/library/trending" && req.method === "GET") {
+      const limit = Number(url.searchParams.get("limit") ?? "20");
+      const result = await this.service.getTrending(Number.isFinite(limit) ? limit : 20);
       this.writeJson(res, 200, result);
       return;
     }
@@ -511,6 +526,68 @@ export class ApiBridgeServer {
       const recommendationId = String(body.recommendationId ?? "");
       const result = await this.service.generateEpisode(recommendationId);
       this.writeJson(res, 200, result);
+      return;
+    }
+
+    // ── Podcast ───────────────────────────────────────────────────────────────
+    if (url.pathname === "/api/podcast/daily" && req.method === "GET") {
+      // Return immediately from cache/DB; kick off background generation if needed.
+      // Do NOT await generation — it can take minutes and would hang the request.
+      const today = new Date().toISOString().slice(0, 10);
+      const existing = this.service.getPodcastById(`daily-${today}`);
+      if (existing && existing.audio_url) {
+        this.writeJson(res, 200, existing);
+      } else {
+        // Trigger generation asynchronously (fire-and-forget)
+        this.service.getDailyPodcast().catch((err: unknown) =>
+          console.error("[apiBridge] background daily generation failed:", err)
+        );
+        this.writeJson(res, 204, null);
+      }
+      return;
+    }
+
+    if (url.pathname === "/api/podcast/force-daily" && req.method === "POST") {
+      const result = await this.service.forceDailyPodcast();
+      this.writeJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/podcast/generate-summary" && req.method === "POST") {
+      const body = (await this.readJson(req)) as Record<string, unknown>;
+      const podcastIds = Array.isArray(body.podcastIds) ? body.podcastIds.map(String) : [];
+      const result = await this.service.generateSummaryPodcast(podcastIds);
+      this.writeJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/podcast/generate-audio" && req.method === "POST") {
+      const body = (await this.readJson(req)) as Record<string, unknown>;
+      const recommendationId = String(body.recommendationId ?? "");
+      const result = await this.service.generatePodcastAudio(recommendationId);
+      this.writeJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/podcast/") && req.method === "GET") {
+      const podcastId = decodeURIComponent(url.pathname.slice("/api/podcast/".length));
+      const result = await this.service.getPodcastById(podcastId);
+      if (!result) { this.writeJson(res, 404, { error: "Podcast not found" }); return; }
+      this.writeJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/podcast/") && url.pathname.endsWith("/rate") && req.method === "POST") {
+      const podcastId = decodeURIComponent(url.pathname.slice("/api/podcast/".length, -"/rate".length));
+      const body = (await this.readJson(req)) as Record<string, unknown>;
+      const rating = Number(body.rating ?? 0);
+      const result = await this.service.ratePodcast(podcastId, rating);
+      this.writeJson(res, 200, result);
+      return;
+    }
+
+    if (url.pathname === "/api/status" && req.method === "GET") {
+      this.writeJson(res, 200, { ok: true, providerStatus: getProviderStatus() });
       return;
     }
 
