@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "briefcast-news": {
-      "url": "http://localhost:5003/mcp"
-    }
-  }
-}
-

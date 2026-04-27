@@ -26,58 +26,15 @@ Briefcast is a cutting-edge lightweight **personalized AI-generated podcast plat
 Briefcast is built as a comprehensive multi-platform ecosystem:
 
 ```
-├── 🌐 web/          # Next.js web application
 ├── 📱 ios/          # Native iOS app (Swift/Xcode)
-├── 🖥️ desktop/      # Cross-platform desktop app (Tauri + React)
-└── 🔧 backend/      # Python backend with AI processing
+└──  🖥️ desktop/      # macOS desktop app (Electron + Next.js)
 ```
-
-## 🛠️ Technology Stack
-
-### Frontend
-- **Web**: Next.js 15, React 19, TypeScript, Tailwind CSS
-- **iOS**: Native Swift with Xcode
-- **Desktop**: Tauri with React and TypeScript
-
-### Backend
-- **Core**: Python with FastAPI and GraphQL
-- **AI/ML**: 
-  - Hugging Face Transformers
-  - Sentence Transformers
-  - PyTorch
-  - Spacy for NLP
-  - OpenAI integration
-- **Audio**: PyDub, TTS engines
-- **Data**: Vector database (Milvus), web crawling (Playwright, Scrapy)
-- **Infrastructure**: Docker support, async processing
 
 ## 🚀 Quick Start
 
 > This project has been tested on MacOS with Apple Silicon (M1, M2, etc.) 16GB+ RAM and Ubuntu 22.04 LTS 16GB+ RAM with Nvidia GPU.
 > 
 > You can set LOCAL_AUDIO=False in the backend/.env file to use OpenAI TTS to reduce the RAM usage.
-
-### Backend Setup
-```bash
-cd backend
-pip install -r requirements.txt
-python api.py
-
-# Build the project
-chmod +x build.sh
-./build.sh
-```
-
-### Web Application
-```bash
-cd web
-npm install
-npm run dev
-
-# Build the project
-npm install
-npm run build
-```
 
 ### iOS Development
 ```bash
@@ -86,17 +43,31 @@ open BriefCast.xcodeproj
 # Build and run in Xcode
 ```
 
-### Desktop Application
+### Desktop Application (macOS)
+
+The desktop app is built with **Electron + Next.js**. You must run `npm install` in **both** the `desktop/` and `desktop/frontend/` directories before building.
+
 ```bash
+# Install dependencies in both directories
 cd desktop
 npm install
-npm run tauri dev
-
-# Build the project
-# Make sure to build the project in the backend directory first
+cd frontend
 npm install
-npm run tauri build
+cd ..
+
+# Development mode
+npm run dev
+
+# Build and package a macOS app (produces a .dmg)
+npm run dist:mac
+
+# Or build just the app bundle without packaging
+npm run build
+npm run dist:dmg
 ```
+
+> **Note:** The macOS distributable will be output to `desktop/release/`.
+> Make sure you have [Node.js](https://nodejs.org/) and [Electron](https://www.electronjs.org/) installed.
 
 ## 📖 Usage
 
@@ -109,20 +80,6 @@ npm run tauri build
 4. **Listen**: Enjoy your custom content across any of our platforms
 5. **Refine**: Rate content to improve future recommendations
 
-## 🔧 Configuration
-
-### Environment Variables
-Create `.env` files in the respective directories:
-
-**Backend** (`backend/.env`):
-```env
-OPENAI_API_KEY= # OpenAI API key
-OPENAI_API_URL=https://api.openai.com/v1/ # OpenAI API URL or Ollama API URL
-TEXT_MODEL=gpt-4.1-nano # Text generation model name
-LOCAL_AUDIO=True # Whether to use local TTS or OpenAI TTS
-AUDIO_MODEL=hexgrad/Kokoro-82M # Audio generation model name
-```
-
 ## 📱 Platform Availability
 
 - ✅ **Web Browser**: Access via any modern browser
@@ -134,18 +91,12 @@ AUDIO_MODEL=hexgrad/Kokoro-82M # Audio generation model name
 ### 🖥️ macOS Desktop App
 
 <div align="center">
-  
-**User Management**
-<img src="files/macos_user.png" alt="macOS User Management" width="800"/>
 
 **Library View**
 <img src="files/macos_library.png" alt="macOS Library" width="800"/>
 
 **Audio Player**
 <img src="files/macos_player.png" alt="macOS Player" width="800"/>
-
-**Server Management**
-<img src="files/macos_server.png" alt="macOS Server" width="800"/>
 
 </div>
 
@@ -175,3 +126,15 @@ This project is licensed under the terms specified in the [LICENSE](LICENSE) fil
 
 We welcome contributions!
 
+
+## 🖥️ TypeScript Desktop Rewrite
+
+A pure TypeScript desktop rewrite is available under [`desktop-ts/`](desktop-ts).
+
+```bash
+cd desktop-ts
+npm install
+npm run dev
+```
+
+This rewrite also starts a local compatibility API bridge (REST/GraphQL/MCP) so existing API-based tooling can still connect.
