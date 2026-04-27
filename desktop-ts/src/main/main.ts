@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, ipcMain, shell, protocol, net } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { config as loadDotenv } from "dotenv";
@@ -32,6 +32,13 @@ function loadEnvironmentFile(): void {
 }
 
 loadEnvironmentFile();
+
+// Register the custom "app" scheme before the app is ready so Electron treats
+// it as a secure, standard origin (needed for fetch, localStorage, etc.).
+// This must be called before app.whenReady().
+protocol.registerSchemesAsPrivileged([
+  { scheme: "app", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }
+]);
 
 const frontendDevServerUrl = process.env.FRONTEND_DEV_SERVER_URL || process.env.VITE_DEV_SERVER_URL;
 const isDev = Boolean(frontendDevServerUrl);
@@ -101,7 +108,7 @@ async function createWindow(): Promise<void> {
       );
     }
   } else {
-    await mainWindow.loadFile(path.join(__dirname, "../frontend/out/index.html"));
+    await mainWindow.loadURL("app://briefcast/");
   }
 }
 
@@ -273,6 +280,21 @@ function registerIpcHandlers(): void {
 app
   .whenReady()
   .then(async () => {
+    // Serve the static Next.js export under app://briefcast/ so that absolute
+    // paths like /_next/static/... resolve correctly (they don't with file://).
+    if (!isDev) {
+      const outDir = path.join(__dirname, "../frontend/out");
+      protocol.handle("app", async (request) => {
+        const { pathname } = new URL(request.url);
+        let relative = decodeURIComponent(pathname);
+        // Map directory-style paths to their index.html
+        if (relative === "/" || relative === "") relative = "/index.html";
+        else if (!path.extname(relative)) relative = `${relative.replace(/\/$/, "")}/index.html`;
+        const filePath = path.join(outDir, relative);
+        return net.fetch(`file://${filePath}`);
+      });
+    }
+
     service = new BriefcastAppService(app.getPath("userData"));
     const appIconPath = resolveAppIconPath();
     if (appIconPath && process.platform === "darwin") {

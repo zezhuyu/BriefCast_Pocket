@@ -11,19 +11,27 @@ function resolveResourceDir(): string {
   if (process.env.BRIEFCAST_RESOURCE_DIR) {
     return process.env.BRIEFCAST_RESOURCE_DIR;
   }
-  // Prioritize desktop-ts local resources first, then fall back to parent/sibling folders
-  const candidates = [
-    path.resolve(process.cwd(), "backend/db/resources"),  // desktop-ts local resources
-    path.resolve(process.cwd(), "../backend/db/resources"),
-    path.resolve(process.cwd(), "../../backend/db/resources"),
-    "/Volumes/sambigdisk1/code/BriefCast_Pocket/backend/db/resources",
-  ];
+
+  const candidates: string[] = [];
+
+  // Packaged Electron app: extraResources land directly in process.resourcesPath
+  if (typeof process.resourcesPath === "string" && process.resourcesPath) {
+    candidates.push(path.join(process.resourcesPath, "assets"));
+  }
+
+  // Dev mode: process.cwd() is the project root (desktop-ts/)
+  candidates.push(path.resolve(process.cwd(), "assets"));
+
+  // Compiled main.cjs lives in dist-electron/ → go up two levels to project root
+  candidates.push(path.resolve(__dirname, "../../assets"));
+
   for (const candidate of candidates) {
     if (fsSync.existsSync(candidate)) {
       return candidate;
     }
   }
-  return candidates[0];
+
+  return path.resolve(process.cwd(), "assets");
 }
 
 const DEFAULT_RESOURCE_DIR = resolveResourceDir();

@@ -6,6 +6,9 @@ import { getBackendBase } from "@/utils/backendUrl";
 
 const BASE = getBackendBase();
 
+// Use Electron IPC bridge when available, fall back to HTTP
+const bc = () => typeof window !== "undefined" ? (window as any).briefcast : null;
+
 interface AppSettings {
   providers: {
     activeProvider: "openai-compatible" | "anthropic" | "codex-cli" | "claude-cli";
@@ -65,10 +68,16 @@ export default function SettingsPage() {
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
     try {
-      const { data } = await axios.get<AppSettings>(`${BASE}api/settings`, {
-        params: { _ts: Date.now() },
-        headers: { "Cache-Control": "no-cache" }
-      });
+      let data: AppSettings;
+      if (bc()) {
+        data = await bc().getSettings();
+      } else {
+        const resp = await axios.get<AppSettings>(`${BASE}api/settings`, {
+          params: { _ts: Date.now() },
+          headers: { "Cache-Control": "no-cache" }
+        });
+        data = resp.data;
+      }
       setSettings({ ...DEFAULTS, ...data });
     } catch {}
     if (!quiet) setLoading(false);
@@ -76,28 +85,29 @@ export default function SettingsPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Hotload: refetch when tab regains focus
+  // Hotload via Electron IPC (fires when settings change from any source)
   useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === "visible") load(true);
-    };
-    const onFocus = () => load(true);
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", onFocus);
-    return () => {
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", onFocus);
-    };
-  }, [load]);
+    const bridge = bc();
+    if (!bridge?.onSettingsChanged) return;
+    return bridge.onSettingsChanged((s: AppSettings) => {
+      setSettings({ ...DEFAULTS, ...s });
+    });
+  }, []);
 
   const save = async () => {
     setSaving(true);
     try {
-      const { data } = await axios.post<AppSettings>(`${BASE}api/settings`, settings);
+      let data: AppSettings;
+      if (bc()) {
+        data = await bc().saveSettings(settings);
+      } else {
+        const resp = await axios.post<AppSettings>(`${BASE}api/settings`, settings);
+        data = resp.data;
+      }
       setSettings({ ...DEFAULTS, ...data });
       setMsg({ text: "Settings saved!", ok: true });
     } catch (err: any) {
-      setMsg({ text: err.response?.data?.error ?? "Save failed", ok: false });
+      setMsg({ text: err?.response?.data?.error ?? err?.message ?? "Save failed", ok: false });
     }
     setSaving(false);
     setTimeout(() => setMsg(null), 3000);

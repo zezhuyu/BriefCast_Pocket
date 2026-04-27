@@ -19,7 +19,7 @@
   "build": {
     "appId": "com.briefcast.desktopts",
     "productName": "BriefCast",
-    "icon": "../backend/db/resources/bc2.png",
+    "icon": "./assets/app-icon.png",
     "directories": {
       "output": "release"
     },
@@ -32,10 +32,14 @@
       {
         "from": ".env",
         "to": ".env"
+      },
+      {
+        "from": "assets",
+        "to": "assets"
       }
     ],
     "mac": {
-      "icon": "../backend/db/resources/bc2.png",
+      "icon": "./assets/app-icon.png",
       "target": [
         {
           "target": "dmg",
