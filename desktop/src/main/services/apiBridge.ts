@@ -46,8 +46,8 @@ export class ApiBridgeServer {
       console.error("[api-bridge] server error", error);
     });
 
-    this.server.listen(this.port, "127.0.0.1", () => {
-      console.log(`[embedded-api-bridge] listening on http://127.0.0.1:${this.port}`);
+    this.server.listen(this.port, "0.0.0.0", () => {
+      console.log(`[embedded-api-bridge] listening on http://0.0.0.0:${this.port}`);
     });
   }
 

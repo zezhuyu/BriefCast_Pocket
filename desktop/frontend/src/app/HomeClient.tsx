@@ -324,20 +324,15 @@ export default function Home() {
   function getCoverImageUrl(url: string | undefined) {
     const normalizedBase = getBackendBase();
     const fallback = normalizedBase
-      ? (normalizedBase.endsWith("/api/") ? `${normalizedBase}resources/default.png` : `${normalizedBase}image/default.png`)
+      ? `${normalizedBase}image/default.png`
       : "/resources/default.png";
     if (!url || !url.trim()) return fallback;
     const normalized = url.trim();
-    if (
-      normalized.startsWith("http") ||
-      normalized.startsWith("file://") ||
-      normalized.startsWith("blob:") ||
-      normalized.startsWith("data:") ||
-      normalized.startsWith("/")
-    ) {
+    // Already an absolute non-backend URL — use as-is
+    if (normalized.startsWith("http") || normalized.startsWith("blob:") || normalized.startsWith("data:")) {
       return normalized;
     }
-    // Backend frequently returns relative media paths like "image/foo.png".
+    // Any path (with or without leading slash) — route through backend base
     return `${normalizedBase}${normalized.replace(/^\/+/, "")}`;
   }
   const transcriptRef = useRef<HTMLDivElement>(null);

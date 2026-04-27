@@ -958,10 +958,10 @@ export class BriefcastAppService {
     const isDailyBriefing = recommendation.id.startsWith("daily-");
     const coverImage =
       isDailyBriefing
-        ? "image/daily.png"
+        ? "/image/daily.png"
         : recommendation.imageUrl && recommendation.imageUrl.trim()
         ? recommendation.imageUrl
-        : `image/${recommendation.imageResource || defaults.image || "default.png"}`;
+        : `/image/${recommendation.imageResource || defaults.image || "default.png"}`;
 
     return {
       id: recommendation.id,
@@ -972,8 +972,8 @@ export class BriefcastAppService {
       duration_seconds: recommendation.estimatedDurationSeconds,
       listen_duration_seconds: Math.max(0, Math.floor(listenDuration)),
       image_url: coverImage,
-      transcript_url: includeMediaUrls ? `transcript/${defaults.transcript}` : "",
-      audio_url: includeMediaUrls ? `audio/${defaults.audio}` : "",
+      transcript_url: includeMediaUrls ? `/transcript/${defaults.transcript}` : "",
+      audio_url: includeMediaUrls ? `/audio/${defaults.audio}` : "",
       category: recommendation.sourceType,
       subcategory: recommendation.subcategory,
       positive_rating: 0,
@@ -987,6 +987,25 @@ export class BriefcastAppService {
     };
   }
 
+  // Convert any stored URL form → /kind/basename (safe to serve over HTTP)
+  private normalizeMediaUrl(url: string, kind: "audio" | "transcript" | "image"): string {
+    if (!url || url.trim() === "") return url;
+    if (url.startsWith("http://") || url.startsWith("https://")) return url;
+    if (url.startsWith("file://")) return `/${kind}/${path.basename(url.slice(7))}`;
+    if (url.startsWith(`/${kind}/`)) return url;
+    if (url.startsWith(`${kind}/`)) return `/${url}`;
+    if (!url.includes("/")) return `/${kind}/${url}`;
+    return url;
+  }
+
+  // Resolve any URL form to a local filesystem path for existence / deletion checks
+  private mediaUrlToFilePath(url: string): string {
+    if (url.startsWith("file://")) return url.slice(7);
+    if (/^\/(audio|transcript|image)\//.test(url)) return path.join(this.baseDir, url.slice(1));
+    if (path.isAbsolute(url)) return url;
+    return path.join(this.baseDir, url);
+  }
+
   private toLegacyPodcastFromStored(podcast: Podcast): LegacyPodcast {
     return {
       id: podcast.id,
@@ -996,9 +1015,9 @@ export class BriefcastAppService {
       duration: this.formatLegacyDuration(podcast.duration_seconds),
       duration_seconds: podcast.duration_seconds,
       listen_duration_seconds: 0,
-      image_url: podcast.image_url || "image/default.png",
-      transcript_url: podcast.transcript_url || "",
-      audio_url: podcast.audio_url || "",
+      image_url: this.normalizeMediaUrl(podcast.image_url || "/image/default.png", "image"),
+      transcript_url: this.normalizeMediaUrl(podcast.transcript_url || "", "transcript"),
+      audio_url: this.normalizeMediaUrl(podcast.audio_url || "", "audio"),
       category: podcast.subcategory || "general",
       subcategory: podcast.subcategory || "general",
       positive_rating: 0,
@@ -1156,7 +1175,7 @@ export class BriefcastAppService {
       duration: "2",
       duration_seconds: 120,
       listen_duration_seconds: 0,
-      image_url: "image/daily.png",
+      image_url: "/image/daily.png",
       transcript_url: "",
       audio_url: "",
       category: "general",
@@ -1194,9 +1213,9 @@ export class BriefcastAppService {
             duration: this.formatLegacyDuration(durationSeconds),
             duration_seconds: durationSeconds,
             listen_duration_seconds: 0,
-            image_url: "image/daily.png",
-            transcript_url: `transcript/${defaults.transcript}`,
-            audio_url: `audio/${defaults.audio}`,
+            image_url: "/image/daily.png",
+            transcript_url: `/transcript/${defaults.transcript}`,
+            audio_url: `/audio/${defaults.audio}`,
             category: top.sourceType,
             subcategory: top.subcategory,
             positive_rating: 0,
@@ -1287,8 +1306,8 @@ export class BriefcastAppService {
     const cleaned = transitionText.replace(/\s+/g, " ").trim();
 
     let durationSeconds = 12;
-    const existingAudio = await this.audioFileExists(`file://${audioPath}`);
-    const existingTranscript = await this.audioFileExists(`file://${transcriptPath}`);
+    const existingAudio = await this.audioFileExists(audioPath);
+    const existingTranscript = await this.audioFileExists(transcriptPath);
     if (!existingAudio || !existingTranscript) {
       // Use "nova" (female) voice for host transitions by default
       const hostVoice = this.settings.tts.hostVoice || "nova";
@@ -1309,9 +1328,9 @@ export class BriefcastAppService {
       duration: this.formatLegacyDuration(durationSeconds),
       duration_seconds: durationSeconds,
       listen_duration_seconds: 0,
-      image_url: `image/${imageResource}`,
-      transcript_url: `transcript/${transcriptFileName}`,
-      audio_url: `audio/${audioFileName}`,
+      image_url: `/image/${imageResource}`,
+      transcript_url: `/transcript/${transcriptFileName}`,
+      audio_url: `/audio/${audioFileName}`,
       category: "transition",
       subcategory: "transition",
       positive_rating: 0,
@@ -1366,9 +1385,9 @@ export class BriefcastAppService {
         duration: this.formatLegacyDuration(generated.duration_seconds || 180),
         duration_seconds: generated.duration_seconds || 180,
         listen_duration_seconds: 0,
-        image_url: "image/summary.png",
-        transcript_url: generated.transcript_url || `transcript/${defaults.transcript}`,
-        audio_url: generated.audio_url || `audio/${defaults.audio}`,
+        image_url: "/image/summary.png",
+        transcript_url: this.normalizeMediaUrl(generated.transcript_url || `/transcript/${defaults.transcript}`, "transcript"),
+        audio_url: this.normalizeMediaUrl(generated.audio_url || `/audio/${defaults.audio}`, "audio"),
         category: "summary",
         subcategory: "summary",
         positive_rating: 0,
@@ -1391,9 +1410,9 @@ export class BriefcastAppService {
         duration: "3",
         duration_seconds: 180,
         listen_duration_seconds: 0,
-        image_url: "image/summary.png",
-        transcript_url: `transcript/${defaults.transcript}`,
-        audio_url: `audio/${defaults.audio}`,
+        image_url: "/image/summary.png",
+        transcript_url: `/transcript/${defaults.transcript}`,
+        audio_url: `/audio/${defaults.audio}`,
         category: "summary",
         subcategory: "summary",
         positive_rating: 0,
@@ -1417,10 +1436,10 @@ export class BriefcastAppService {
       id: entry.id,
       recommendation_id: entry.recommendationId,
       image_url: String(entry.recommendationId).startsWith("daily-")
-        ? "image/daily.png"
+        ? "/image/daily.png"
         : entry.imageUrl && entry.imageUrl.trim()
           ? entry.imageUrl
-          : `image/${entry.imageResource || defaults.image}`,
+          : `/image/${entry.imageResource || defaults.image}`,
       title: entry.title,
       subcategory: entry.subcategory,
       listen_duration_seconds: entry.progressSeconds,
@@ -1780,14 +1799,16 @@ export class BriefcastAppService {
   }
 
   getPodcastById(podcastId: string): Podcast | null {
-    return this.podcastCache.get(podcastId) ?? this.db.getPodcastById(podcastId);
+    const podcast = this.podcastCache.get(podcastId) ?? this.db.getPodcastById(podcastId);
+    return podcast ? this.normalizePodcast(podcast) : null;
   }
 
   async generatePodcastAudio(recommendationId: string): Promise<Podcast> {
     const cached = this.podcastCache.get(recommendationId) ?? this.db.getPodcastById(recommendationId);
     if (cached && cached.audio_url && cached.transcript_url) {
-      this.podcastCache.set(recommendationId, cached);
-      return cached;
+      const clean = this.normalizePodcast(cached);
+      this.podcastCache.set(recommendationId, clean);
+      return clean;
     }
 
     const inFlight = this.podcastGenerationInFlight.get(recommendationId);
@@ -1796,8 +1817,9 @@ export class BriefcastAppService {
     const task = this.podcastGenerationQueue.then(async () => {
       const recheck = this.podcastCache.get(recommendationId) ?? this.db.getPodcastById(recommendationId);
       if (recheck && recheck.audio_url && recheck.transcript_url) {
-        this.podcastCache.set(recommendationId, recheck);
-        return recheck;
+        const clean = this.normalizePodcast(recheck);
+        this.podcastCache.set(recommendationId, clean);
+        return clean;
       }
 
       const manifest = await this.mediaResources.getManifest();
@@ -1805,8 +1827,7 @@ export class BriefcastAppService {
       const rec = this.db.getRecommendationById(recommendationId, imageResource);
       if (!rec) throw new Error(`Recommendation not found: ${recommendationId}`);
 
-      const defaultImagePath = path.join(manifest.resourceDir, "default.png");
-      const imageUrl = rec.imageUrl || `file://${defaultImagePath}`;
+      const imageUrl = rec.imageUrl || "/image/default.png";
 
       // Generate via pipeline (single article, no intro/outro)
       const pipeline = await generateDailyPodcast({
@@ -1831,8 +1852,8 @@ export class BriefcastAppService {
         subcategory: rec.subcategory,
         source_name: rec.sourceName,
         image_url: imageUrl,
-        audio_url: `file://${pipeline.audioPath}`,
-        transcript_url: `file://${pipeline.lrcPath}`,
+        audio_url: `/audio/${path.basename(pipeline.audioPath)}`,
+        transcript_url: `/transcript/${path.basename(pipeline.lrcPath)}`,
         duration_seconds: pipeline.durationSeconds,
         published_at: rec.publishedAt,
         link: rec.url,
@@ -1853,13 +1874,32 @@ export class BriefcastAppService {
   }
 
   private async audioFileExists(audioUrl: string): Promise<boolean> {
-    const filePath = audioUrl.startsWith("file://") ? audioUrl.slice(7) : audioUrl;
     try {
-      await fs.access(filePath);
+      await fs.access(this.mediaUrlToFilePath(audioUrl));
       return true;
     } catch {
       return false;
     }
+  }
+
+  // Rewrite any file:// or bare-relative URLs in a stored Podcast to /kind/filename
+  // form so all API responses are directly usable by HTTP clients.
+  // Persists the fix back to DB so subsequent reads are already clean.
+  private normalizePodcast(podcast: Podcast): Podcast {
+    const normalized: Podcast = {
+      ...podcast,
+      audio_url: this.normalizeMediaUrl(podcast.audio_url || "", "audio"),
+      transcript_url: this.normalizeMediaUrl(podcast.transcript_url || "", "transcript"),
+      image_url: this.normalizeMediaUrl(podcast.image_url || "/image/default.png", "image"),
+    };
+    if (
+      normalized.audio_url !== podcast.audio_url ||
+      normalized.transcript_url !== podcast.transcript_url ||
+      normalized.image_url !== podcast.image_url
+    ) {
+      this.db.savePodcast(normalized);
+    }
+    return normalized;
   }
 
   async getDailyPodcast(): Promise<Podcast | null> {
@@ -1867,15 +1907,10 @@ export class BriefcastAppService {
     const cacheKey = `daily-${today}`;
     const existing = this.podcastCache.get(cacheKey) ?? this.db.getDailyPodcast(today);
     if (existing && existing.audio_url && await this.audioFileExists(existing.audio_url)) {
-      // Use relative path so browser can load via HTTP (not file://)
-      const normalizedDailyImage = "image/daily.png";
-      if (existing.image_url !== normalizedDailyImage) {
-        existing.image_url = normalizedDailyImage;
-        this.db.savePodcast(existing);
-      }
+      const clean = this.normalizePodcast(existing);
+      this.podcastCache.set(cacheKey, clean);
       console.log("[getDailyPodcast] returning cached daily podcast:", cacheKey);
-      this.podcastCache.set(cacheKey, existing);
-      return existing;
+      return clean;
     }
     console.log("[getDailyPodcast] no valid cached podcast for", today, "— starting generation");
     return this.generateDailyPodcastInternal();
@@ -1896,8 +1931,7 @@ export class BriefcastAppService {
     if (!recs.length) throw new Error("No valid articles found for summary");
 
     const summaryManifest = await this.mediaResources.getManifest();
-    // Use relative path so browser can load via HTTP (not file://)
-    const summaryImage = "image/summary.png";
+    const summaryImage = "/image/summary.png";
 
     const pipeline = await generateDailyPodcast({
       baseDir: this.baseDir,
@@ -1916,8 +1950,8 @@ export class BriefcastAppService {
       subcategory: "News Summary",
       source_name: "BriefCast",
       image_url: summaryImage,
-      audio_url: `file://${pipeline.audioPath}`,
-      transcript_url: `file://${pipeline.lrcPath}`,
+      audio_url: `/audio/${path.basename(pipeline.audioPath)}`,
+      transcript_url: `/transcript/${path.basename(pipeline.lrcPath)}`,
       duration_seconds: pipeline.durationSeconds,
       published_at: pipeline.publishedAt,
       link: "",
@@ -1983,8 +2017,7 @@ export class BriefcastAppService {
     }
 
     const manifest = await this.mediaResources.getManifest();
-    // Use relative path so browser can load via HTTP (not file://)
-    const coverImage = "image/daily.png";
+    const coverImage = "/image/daily.png";
     const location = await getIpLocation();
 
     const pipeline = await generateDailyPodcast({
@@ -2008,8 +2041,8 @@ export class BriefcastAppService {
       subcategory: "Daily Briefing",
       source_name: "BriefCast",
       image_url: coverImage,
-      audio_url: `file://${pipeline.audioPath}`,
-      transcript_url: `file://${pipeline.lrcPath}`,
+      audio_url: `/audio/${path.basename(pipeline.audioPath)}`,
+      transcript_url: `/transcript/${path.basename(pipeline.lrcPath)}`,
       duration_seconds: pipeline.durationSeconds,
       published_at: pipeline.publishedAt,
       link: "",
@@ -2040,9 +2073,7 @@ export class BriefcastAppService {
     const podcasts = this.db.getAllPodcasts();
     for (const podcast of podcasts) {
       if (podcast.published_at < cutoff && podcast.audio_url) {
-        const filePath = podcast.audio_url.startsWith("file://")
-          ? podcast.audio_url.slice(7)
-          : podcast.audio_url;
+        const filePath = this.mediaUrlToFilePath(podcast.audio_url);
         try {
           await fs.unlink(filePath);
           console.log("[cleanup] deleted old audio:", filePath);

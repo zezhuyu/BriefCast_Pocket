@@ -551,13 +551,12 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        // Convert relative image paths to absolute backend URLs
-        if (!data.image_url || data.image_url === "") {
-          data.image_url = buildLegacyUrl("image/default.png");
-        } else if (!data.image_url.startsWith("http") && !data.image_url.startsWith('/') && !data.image_url.startsWith('blob:') && !data.image_url.startsWith('file://') && !data.image_url.startsWith('data:')) {
-          // Relative path like "image/daily.png" - convert to absolute backend URL
-          data.image_url = buildLegacyUrl(data.image_url);
-        }
+        // Convert all media paths to absolute backend URLs
+        data.image_url = data.image_url
+          ? toAbsoluteBackendUrl(data.image_url)
+          : buildLegacyUrl("image/default.png");
+        data.audio_url = toAbsoluteBackendUrl(data.audio_url || '');
+        data.transcript_url = toAbsoluteBackendUrl(data.transcript_url || '');
 
         // Daily and just-generated podcasts can be returned as placeholders first.
         // Keep polling until media URLs are populated.
