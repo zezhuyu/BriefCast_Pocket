@@ -38,6 +38,7 @@
         "to": "assets"
       }
     ],
+    "afterPack": "./afterPack.cjs",
     "mac": {
       "icon": "./assets/app-icon.png",
       "target": [
@@ -49,7 +50,9 @@
           ]
         }
       ],
-      "category": "public.app-category.news"
+      "category": "public.app-category.news",
+      "additionalArguments": ["--no-strict"],
+      "strictVerify": false
     },
     "dmg": {
       "artifactName": "${productName}-${version}-${arch}.${ext}"
