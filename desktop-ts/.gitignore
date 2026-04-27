@@ -1,9 +1,0 @@
-node_modules
-dist-electron
-dist-renderer
-*.log
-.env
-.omx
-.cache
-release/
-AGENTS.md
