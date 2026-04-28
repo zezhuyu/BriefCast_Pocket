@@ -56,12 +56,16 @@ function readRows(csvPath: string): RssRow[] {
 
 export function resolveRssCsvPath(): string | null {
   const candidates = [
-    path.resolve(process.cwd(), "../backend/db/rss.csv"),
-    path.resolve(process.cwd(), "backend/db/rss.csv"),
-    path.resolve(process.cwd(), "../../backend/db/rss.csv"),
+    typeof process.resourcesPath === "string" && process.resourcesPath
+      ? path.join(process.resourcesPath, "assets", "rss.csv")
+      : "",
+    path.resolve(process.cwd(), "assets/rss.csv"),
+    path.resolve(process.cwd(), "../../assets/rss.csv"),
+    path.resolve(__dirname, "../../assets/rss.csv"),
   ];
 
   for (const candidate of candidates) {
+    if (!candidate) continue;
     if (fs.existsSync(candidate)) {
       return candidate;
     }

@@ -39,6 +39,9 @@ const DEFAULT_RESOURCE_DIR = resolveResourceDir();
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
 const AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".m4a", ".ogg"]);
 const LYRIC_EXTENSIONS = new Set([".lrc", ".txt"]);
+const IMAGE_DIR_NAME = "image";
+const AUDIO_DIR_NAME = "audio";
+const TRANSCRIPT_DIR_NAME = "transcript";
 
 function normalizeName(name: string): string {
   const trimmed = name.trim();
@@ -91,6 +94,14 @@ function pickFirst(files: string[], preferred: string[]): string {
   return files[0] ?? "";
 }
 
+function resolveKindFromName(name: string): "image" | "audio" | "transcript" {
+  const ext = path.extname(name).toLowerCase();
+  if (IMAGE_EXTENSIONS.has(ext)) return "image";
+  if (AUDIO_EXTENSIONS.has(ext)) return "audio";
+  if (LYRIC_EXTENSIONS.has(ext)) return "transcript";
+  throw new Error(`Unsupported resource extension for "${name}"`);
+}
+
 export class MediaResourceService {
   private readonly resourceDir: string;
 
@@ -99,10 +110,9 @@ export class MediaResourceService {
   }
 
   async getManifest(): Promise<MediaManifest> {
-    const all = await this.listFiles();
-    const images = all.filter((name) => IMAGE_EXTENSIONS.has(path.extname(name).toLowerCase()));
-    const audio = all.filter((name) => AUDIO_EXTENSIONS.has(path.extname(name).toLowerCase()));
-    const lyrics = all.filter((name) => LYRIC_EXTENSIONS.has(path.extname(name).toLowerCase()));
+    const images = await this.listFilesByKind("image");
+    const audio = await this.listFilesByKind("audio");
+    const lyrics = await this.listFilesByKind("transcript");
 
     return {
       resourceDir: this.resourceDir,
@@ -119,7 +129,7 @@ export class MediaResourceService {
 
   async readResource(name: string, format: MediaResourceFormat = "base64"): Promise<MediaResourcePayload> {
     const normalized = normalizeName(name);
-    const fullPath = path.join(this.resourceDir, normalized);
+    const fullPath = this.resolveResourcePath(normalized);
     const content = await fs.readFile(fullPath);
 
     if (format === "text") {
@@ -141,7 +151,7 @@ export class MediaResourceService {
 
   async readResourceBuffer(name: string): Promise<{ name: string; mimeType: string; buffer: Buffer }> {
     const normalized = normalizeName(name);
-    const fullPath = path.join(this.resourceDir, normalized);
+    const fullPath = this.resolveResourcePath(normalized);
     const buffer = await fs.readFile(fullPath);
     return {
       name: normalized,
@@ -150,16 +160,36 @@ export class MediaResourceService {
     };
   }
 
-  private async listFiles(): Promise<string[]> {
+  private resolveResourcePath(name: string): string {
+    const kind = resolveKindFromName(name);
+    switch (kind) {
+      case "image":
+        return path.join(this.resourceDir, IMAGE_DIR_NAME, name);
+      case "audio":
+        return path.join(this.resourceDir, AUDIO_DIR_NAME, name);
+      case "transcript":
+        return path.join(this.resourceDir, TRANSCRIPT_DIR_NAME, name);
+    }
+  }
+
+  private async listFilesByKind(kind: "image" | "audio" | "transcript"): Promise<string[]> {
+    const dirName =
+      kind === "image"
+        ? IMAGE_DIR_NAME
+        : kind === "audio"
+          ? AUDIO_DIR_NAME
+          : TRANSCRIPT_DIR_NAME;
+    const fullDir = path.join(this.resourceDir, dirName);
+
     try {
-      const dirents = await fs.readdir(this.resourceDir, { withFileTypes: true });
+      const dirents = await fs.readdir(fullDir, { withFileTypes: true });
       return dirents
         .filter((entry) => entry.isFile())
         .map((entry) => entry.name)
         .sort((a, b) => a.localeCompare(b));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Failed to read media resources at ${this.resourceDir}: ${message}`);
+      throw new Error(`Failed to read ${kind} resources at ${fullDir}: ${message}`);
     }
   }
 }

@@ -3,13 +3,13 @@
  * Mirrors the Python backend's podcast.py / daily.py:
  *   opening.wav → starting.wav → [story + transition]* → ending.wav → combined → LRC
  *
- * Resource audio files from backend/db/resources/ are used as-is for the
+ * Resource audio/text files from assets/audio and assets/transcript are used as-is for the
  * intro/outro bookends. TTS segments are written to temp files and everything
  * is joined by ffmpeg into a single 32kbps mono 16kHz MP3 (matching the backend).
  *
  * Background music:
- *   - Opening: op.wav plays at 0.12 volume; greeting speech starts after 31s delay
- *   - Ending:  ed.wav plays at 0.15 volume; ending speech starts after 3.5s delay
+ *   - Opening: op.wav plays at 0.20 volume; greeting speech starts after 31s delay
+ *   - Ending:  ed.wav plays at 0.25 volume; ending speech starts after 3.5s delay
  *
  * Weather forecast (if location provided as "lat,lon"):
  *   - Fetched from wttr.in, summarised by LLM, synthesised as TTS
@@ -43,7 +43,7 @@ interface ArticleInput {
 
 export interface PipelineOptions {
   baseDir: string;
-  resourceDir: string;  // path to backend/db/resources (or equivalent)
+  resourceDir: string;  // path to assets root (contains audio/, transcript/, image/)
   settings: AppSettings;
   articles: ArticleInput[];
   title?: string;
@@ -328,7 +328,7 @@ async function ffmpegConcat(ffmpeg: string, inputFiles: string[], outputPath: st
  *
  * @param bgFile       - Background music WAV (op.wav or ed.wav)
  * @param speechFiles  - Ordered speech audio segments to be concatenated and mixed in
- * @param bgVolume     - Background volume (0.12 for intro, 0.15 for outro)
+ * @param bgVolume     - Background volume (0.20 for intro, 0.25 for outro)
  * @param speechDelayMs- Milliseconds to delay speech after track start (31000 for intro, 3500 for outro)
  * @param outputPath   - Output MP3 path
  */
@@ -484,13 +484,38 @@ export async function generateDailyPodcast(opts: PipelineOptions): Promise<Pipel
   let cursor = 0;
 
   // ── Resource loader helpers ───────────────────────────────────────────────
+  // Primary lookup follows bundled assets layout:
+  //   <resourceDir>/audio/*.wav
+  //   <resourceDir>/transcript/*.lrc
+  // Fallback to <resourceDir>/<name> for backward compatibility.
   const resourceAudio = async (name: string): Promise<Buffer | null> => {
-    try { return await fs.readFile(path.join(resourceDir, name)); }
-    catch { console.warn(`[pipeline] resource not found: ${name}`); return null; }
+    const candidates = [
+      path.join(resourceDir, "audio", name),
+      path.join(resourceDir, name),
+    ];
+    for (const candidate of candidates) {
+      try {
+        return await fs.readFile(candidate);
+      } catch {
+        // try next candidate
+      }
+    }
+    console.warn(`[pipeline] resource audio not found: ${name}`);
+    return null;
   };
   const resourceText = async (name: string): Promise<string | null> => {
-    try { return await fs.readFile(path.join(resourceDir, name), "utf8"); }
-    catch { return null; }
+    const candidates = [
+      path.join(resourceDir, "transcript", name),
+      path.join(resourceDir, name),
+    ];
+    for (const candidate of candidates) {
+      try {
+        return await fs.readFile(candidate, "utf8");
+      } catch {
+        // try next candidate
+      }
+    }
+    return null;
   };
 
   // ── Skip intro/outro for single podcast or summary (just content) ─────────
@@ -668,7 +693,7 @@ export async function generateDailyPodcast(opts: PipelineOptions): Promise<Pipel
     const openingMixedPath = path.join(tmpDir, "opening_mixed.mp3");
     console.log(`[pipeline] mixing opening: op.wav + ${openingSpeechFiles.length} speech segments (delay:${SPEECH_DELAY_S}s)…`);
     try {
-      await ffmpegMixWithBg(ffmpeg!, opPath, openingSpeechFiles, 0.12, SPEECH_DELAY_S * 1000, openingMixedPath);
+      await ffmpegMixWithBg(ffmpeg!, opPath, openingSpeechFiles, 0.35, SPEECH_DELAY_S * 1000, openingMixedPath);
       tempFiles.push(openingMixedPath);
       audioFiles.push(openingMixedPath);
       // The mixed file duration = max(op.wav, SPEECH_DELAY_S + speech_duration)
@@ -815,7 +840,7 @@ export async function generateDailyPodcast(opts: PipelineOptions): Promise<Pipel
     const endingMixedPath = path.join(tmpDir, "ending_mixed.mp3");
     console.log(`[pipeline] mixing ending: ed.wav + ending.wav (delay:${ENDING_DELAY_S}s)…`);
     try {
-      await ffmpegMixWithBg(ffmpeg!, edPath, [endSpeechPath], 0.15, ENDING_DELAY_S * 1000, endingMixedPath);
+      await ffmpegMixWithBg(ffmpeg!, edPath, [endSpeechPath], 0.35, ENDING_DELAY_S * 1000, endingMixedPath);
       tempFiles.push(endingMixedPath);
       audioFiles.push(endingMixedPath);
       if (endingLrcRaw) lrcParts.push(offsetLrc(endingLrcRaw.trim(), cursor + ENDING_DELAY_S));

@@ -62,6 +62,7 @@ export default function RootLayout({
         </head>
         <body className="h-full w-full bg-white">
           <ProviderStatusBanner />
+          <div className="electron-drag-region" aria-hidden="true" />
           <div className="h-full w-full bg-white shadow-xl flex flex-col rounded-2xl">
             <div className="flex-1 overflow-y-auto">
               <Suspense fallback={<div>Loading...</div>}>

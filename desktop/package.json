@@ -34,8 +34,20 @@
         "to": ".env"
       },
       {
-        "from": "assets",
-        "to": "assets"
+        "from": "assets/image",
+        "to": "assets/image"
+      },
+      {
+        "from": "assets/audio",
+        "to": "assets/audio"
+      },
+      {
+        "from": "assets/transcript",
+        "to": "assets/transcript"
+      },
+      {
+        "from": "assets/rss.csv",
+        "to": "assets/rss.csv"
       }
     ],
     "afterPack": "./afterPack.cjs",
