@@ -1,4 +1,5 @@
 import Parser from "rss-parser";
+import { chromium, Browser } from "playwright";
 
 export interface IngestArticle {
   title: string;
@@ -294,38 +295,82 @@ interface ScrapedPage {
   content?: string;
 }
 
-/** Fetch an article page and extract og:image + readable body text. */
+// Shared headless browser instance — reused across scrapes to avoid launch overhead
+let _browser: Browser | null = null;
+
+async function getHeadlessBrowser(): Promise<Browser> {
+  if (!_browser || !_browser.isConnected()) {
+    _browser = await chromium.launch({ headless: true });
+  }
+  return _browser;
+}
+
+export async function closeHeadlessBrowser(): Promise<void> {
+  if (_browser) {
+    await _browser.close().catch(() => {});
+    _browser = null;
+  }
+}
+
+const BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+/** Fetch an article page and extract og:image + readable body text.
+ *  Tries a plain fetch first; falls back to a headless Chromium page for
+ *  sites that block simple HTTP clients. */
 async function scrapeArticlePage(url: string): Promise<ScrapedPage> {
+  // Fast path: plain fetch (no browser overhead)
   try {
     const res = await fetch(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": BROWSER_UA,
         "Accept": "text/html,application/xhtml+xml",
         "Accept-Language": "en-US,en;q=0.9"
       },
       signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) return {};
 
-    const reader = res.body?.getReader();
-    if (!reader) return {};
-    const chunks: Uint8Array[] = [];
-    let totalBytes = 0;
-    while (totalBytes < SCRAPE_READ_LIMIT) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-      totalBytes += value.length;
+    if (res.ok) {
+      const reader = res.body?.getReader();
+      if (reader) {
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
+        while (totalBytes < SCRAPE_READ_LIMIT) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          totalBytes += value.length;
+        }
+        reader.cancel().catch(() => {});
+        const html = new TextDecoder().decode(
+          chunks.reduce((a, b) => { const c = new Uint8Array(a.length + b.length); c.set(a); c.set(b, a.length); return c; }, new Uint8Array())
+        );
+        const image = extractImageFromHtml(html, url);
+        const content = extractArticleText(html);
+        if (content) return { image, content };
+        // Content empty — site likely rendered via JS; fall through to browser
+      }
     }
-    reader.cancel().catch(() => {});
+  } catch {
+    // Network error or timeout — fall through to browser
+  }
 
-    const html = new TextDecoder().decode(
-      chunks.reduce((a, b) => { const c = new Uint8Array(a.length + b.length); c.set(a); c.set(b, a.length); return c; }, new Uint8Array())
-    );
-
-    const image = extractImageFromHtml(html, url);
-    const content = extractArticleText(html);
-    return { image, content };
+  // Browser fallback: full Playwright page render (handles JS-gated / bot-blocking sites)
+  try {
+    const browser = await getHeadlessBrowser();
+    const context = await browser.newContext({
+      userAgent: BROWSER_UA,
+      extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
+    });
+    const page = await context.newPage();
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
+      const html = await page.content();
+      const image = extractImageFromHtml(html, url);
+      const content = extractArticleText(html);
+      return { image, content };
+    } finally {
+      await context.close();
+    }
   } catch {
     return {};
   }
