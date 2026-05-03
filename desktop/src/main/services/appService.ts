@@ -1446,7 +1446,7 @@ export class BriefcastAppService {
       duration_seconds: entry.durationSeconds,
       stop_position_seconds: entry.progressSeconds,
       listened_at: entry.listenedAt,
-      published_at: entry.listenedAt
+      published_at: entry.publishedAt || entry.listenedAt
     }));
   }
 

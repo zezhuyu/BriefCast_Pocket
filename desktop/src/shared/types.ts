@@ -131,6 +131,7 @@ export interface ListenHistoryItem {
   progressSeconds: number;
   durationSeconds: number;
   listenedAt: number;
+  publishedAt: number;
 }
 
 export interface DownloadPodcastItem {

@@ -688,13 +688,14 @@ export class BriefcastDb {
       progressSeconds,
       durationSeconds,
       listenedAt: now,
+      publishedAt: 0,
     };
   }
 
   getHistory(limit = 200): ListenHistoryItem[] {
     return this.db
-      .prepare<[number], HistoryRow & { article_image_url: string | null }>(
-        `SELECT h.*, a.image_url AS article_image_url
+      .prepare<[number], HistoryRow & { article_image_url: string | null; article_published_at: number | null }>(
+        `SELECT h.*, a.image_url AS article_image_url, a.published_at AS article_published_at
          FROM history h
          LEFT JOIN articles a ON a.id = h.recommendation_id
          ORDER BY h.listened_at DESC LIMIT ?`
@@ -712,6 +713,7 @@ export class BriefcastDb {
         progressSeconds: row.progress_seconds,
         durationSeconds: row.duration_seconds,
         listenedAt: row.listened_at,
+        publishedAt: row.article_published_at ?? 0,
       }));
   }
 

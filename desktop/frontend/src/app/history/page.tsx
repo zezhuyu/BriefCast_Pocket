@@ -142,7 +142,7 @@ export default function HistoryPage() {
   
   // Render a history item
   const renderHistoryItem = (item: {
-    stop_position_seconds: number; id: Key | null | undefined; recommendation_id?: Key | null | undefined; image_url: any; title: string | number | bigint | boolean | ReactElement<unknown, string | JSXElementConstructor<any>> | Iterable<ReactNode> | Promise<string | number | bigint | boolean | ReactPortal | ReactElement<unknown, string | JSXElementConstructor<any>> | Iterable<ReactNode> | null | undefined> | null | undefined; listen_duration_seconds: number; duration_seconds: number; subcategory: string | number | bigint | boolean | ReactElement<unknown, string | JSXElementConstructor<any>> | Iterable<ReactNode> | ReactPortal | Promise<string | number | bigint | boolean | ReactPortal | ReactElement<unknown, string | JSXElementConstructor<any>> | Iterable<ReactNode> | null | undefined> | null | undefined; listened_at: number; 
+    stop_position_seconds: number; id: Key | null | undefined; recommendation_id?: Key | null | undefined; image_url: any; title: string | number | bigint | boolean | ReactElement<unknown, string | JSXElementConstructor<any>> | Iterable<ReactNode> | Promise<string | number | bigint | boolean | ReactPortal | ReactElement<unknown, string | JSXElementConstructor<any>> | Iterable<ReactNode> | null | undefined> | null | undefined; listen_duration_seconds: number; duration_seconds: number; subcategory: string | number | bigint | boolean | ReactElement<unknown, string | JSXElementConstructor<any>> | Iterable<ReactNode> | ReactPortal | Promise<string | number | bigint | boolean | ReactPortal | ReactElement<unknown, string | JSXElementConstructor<any>> | Iterable<ReactNode> | null | undefined> | null | undefined; listened_at: number; published_at?: number;
 }) => (
     <div 
       key={String(item.id || `${String(item.recommendation_id || "history")}-${item.listened_at || 0}`)}
@@ -167,7 +167,7 @@ export default function HistoryPage() {
         <h3 className="font-medium text-white text-sm line-clamp-1">{item.title}</h3>
         <p className="text-white/70 text-xs mb-1">{item.subcategory}</p>
         <div className="flex justify-between items-center mt-2">
-          <span className="text-white/50 text-xs">{toDate(item.listened_at)}</span>
+          <span className="text-white/50 text-xs">{toDate(item.published_at || item.listened_at)}</span>
           <span className="text-amber-400 text-xs">{(item.stop_position_seconds / item.duration_seconds * 100).toFixed(0)}% completed</span>
         </div>
       </div>

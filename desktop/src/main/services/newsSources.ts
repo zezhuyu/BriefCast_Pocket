@@ -300,7 +300,11 @@ let _browser: Browser | null = null;
 
 async function getHeadlessBrowser(): Promise<Browser> {
   if (!_browser || !_browser.isConnected()) {
-    _browser = await chromium.launch({ headless: true });
+    _browser = await chromium.launch({
+      headless: true,
+      // Hide Chromium's automation fingerprint so bot-detecting sites don't block us
+      args: ["--disable-blink-features=AutomationControlled"],
+    });
   }
   return _browser;
 }
@@ -314,9 +318,55 @@ export async function closeHeadlessBrowser(): Promise<void> {
 
 const BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
+/**
+ * Extract article text from Next.js __NEXT_DATA__ embedded JSON.
+ * Many modern news sites (AP News, Bloomberg, etc.) embed full article HTML/text
+ * in a <script id="__NEXT_DATA__"> tag which is present even in plain-fetch HTML.
+ */
+function extractFromNextData(html: string): string | undefined {
+  const m = html.match(/<script[^>]+id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+  if (!m) return undefined;
+  try {
+    const raw = m[1];
+    // Ordered by likelihood: AP News uses storyHTML, others use articleBody/body/content
+    const fieldPatterns = [
+      /"storyHTML"\s*:\s*"((?:[^"\\]|\\.)*)"/,
+      /"articleBody"\s*:\s*"((?:[^"\\]|\\.)*)"/,
+      /"(?:body|content|text)"\s*:\s*"((?:[^"\\]|\\.){500,})"/,  // min 500 chars to skip nav strings
+    ];
+    for (const pattern of fieldPatterns) {
+      const cm = raw.match(pattern);
+      if (!cm) continue;
+      const unescaped = cm[1]
+        .replace(/\\n/g, "\n").replace(/\\t/g, " ")
+        .replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+      const text = htmlToText(unescaped);
+      if (text.split(/\s+/).length >= 100) return text.slice(0, 8000);
+    }
+  } catch { /* malformed JSON — ignore */ }
+  return undefined;
+}
+
+// Selectors tried in order when using Playwright DOM extraction
+const ARTICLE_SELECTORS = [
+  "[data-testid='Body']",           // Reuters
+  "[data-gu-name='body']",          // The Guardian
+  ".article-body-viewer-selector",  // Guardian (alt)
+  ".dcr-1qe8r1m",                   // Guardian dynamic class fallback (innerText still works)
+  "[data-component='text-block']",  // Guardian paragraphs
+  "article",
+  "[class*='ArticleBody']",         // Bloomberg, Forbes
+  "[class*='article-body']",
+  "[class*='story-body']",
+  "[class*='post-content']",
+  "[class*='entry-content']",
+  "main",
+];
+
 /** Fetch an article page and extract og:image + readable body text.
- *  Tries a plain fetch first; falls back to a headless Chromium page for
- *  sites that block simple HTTP clients. */
+ *  Tries a plain fetch first (with __NEXT_DATA__ fallback for React sites);
+ *  falls back to a headless Chromium page with live DOM extraction for
+ *  JS-gated / bot-blocking sites. */
 async function scrapeArticlePage(url: string): Promise<ScrapedPage> {
   // Fast path: plain fetch (no browser overhead)
   try {
@@ -345,7 +395,8 @@ async function scrapeArticlePage(url: string): Promise<ScrapedPage> {
           chunks.reduce((a, b) => { const c = new Uint8Array(a.length + b.length); c.set(a); c.set(b, a.length); return c; }, new Uint8Array())
         );
         const image = extractImageFromHtml(html, url);
-        const content = extractArticleText(html);
+        // Try regex extraction first, then __NEXT_DATA__ JSON for React/Next.js sites
+        const content = extractArticleText(html) ?? extractFromNextData(html);
         if (content) return { image, content };
         // Content empty — site likely rendered via JS; fall through to browser
       }
@@ -354,7 +405,7 @@ async function scrapeArticlePage(url: string): Promise<ScrapedPage> {
     // Network error or timeout — fall through to browser
   }
 
-  // Browser fallback: full Playwright page render (handles JS-gated / bot-blocking sites)
+  // Browser fallback: headless Chromium with live DOM extraction
   try {
     const browser = await getHeadlessBrowser();
     const context = await browser.newContext({
@@ -362,11 +413,52 @@ async function scrapeArticlePage(url: string): Promise<ScrapedPage> {
       extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
     });
     const page = await context.newPage();
+    // Mask navigator.webdriver so anti-bot checks see a regular browser
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => false });
+    });
     try {
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: 15000 });
+
+      // Dismiss cookie/GDPR consent popups that gate article content
+      await page.evaluate(() => {
+        const acceptPatterns = [
+          'button[id*="accept"]', 'button[class*="accept"]',
+          'button[data-testid*="accept"]', 'button[title*="Accept"]',
+          '[class*="consent"] button', '[id*="consent"] button',
+          '[class*="cookie"] button', '[id*="cookie"] button',
+        ];
+        for (const sel of acceptPatterns) {
+          const btn = document.querySelector(sel) as HTMLElement | null;
+          if (btn) { btn.click(); break; }
+        }
+      }).catch(() => {});
+
+      // Use browser's own DOM to extract text — far more reliable than regex on
+      // JS-rendered HTML (handles shadow DOM, dynamic class names, etc.)
+      const domExtract = async (): Promise<string> =>
+        page.evaluate((selectors: string[]) => {
+          for (const sel of selectors) {
+            const el = document.querySelector(sel) as HTMLElement | null;
+            if (!el) continue;
+            const text = (el.innerText || el.textContent || "").trim();
+            if (text.split(/\s+/).filter(Boolean).length >= 100) return text;
+          }
+          return (document.body?.innerText || "").trim();
+        }, ARTICLE_SELECTORS).catch(() => "");
+
+      let domText = await domExtract();
+
+      // If content is thin after domcontentloaded, wait for JS to finish rendering
+      if (domText.split(/\s+/).filter(Boolean).length < 100) {
+        await page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {});
+        domText = await domExtract();
+      }
+
       const html = await page.content();
       const image = extractImageFromHtml(html, url);
-      const content = extractArticleText(html);
+      const wordCount = domText.split(/\s+/).filter(Boolean).length;
+      const content = wordCount >= 100 ? domText.slice(0, 8000) : (extractArticleText(html) ?? extractFromNextData(html));
       return { image, content };
     } finally {
       await context.close();

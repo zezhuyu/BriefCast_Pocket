@@ -32,7 +32,7 @@ const parseDateString = (timestamp: string | number | undefined | null): Date =>
     return new Date();
   }
   if (typeof timestamp === 'number') {
-    return new Date(timestamp * 1000);
+    return new Date(timestamp > 1e10 ? timestamp : timestamp * 1000);
   }
 
   if (!timestamp.trim()) {
@@ -390,7 +390,7 @@ export default function LibraryPage() {
       <div className="p-3">
         <h3 className="font-medium text-sm line-clamp-1 text-gray-800">{item.title}</h3>
         <div className="flex justify-between text-xs text-gray-500">
-          <span>{toDate(item.listened_at)}</span>
+          <span>{toDate(item.published_at || item.listened_at)}</span>
         </div>
       </div>
 
