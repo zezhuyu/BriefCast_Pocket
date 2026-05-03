@@ -48,6 +48,14 @@
       {
         "from": "assets/rss.csv",
         "to": "assets/rss.csv"
+      },
+      {
+        "from": "assets/app-icon.png",
+        "to": "assets/app-icon.png"
+      },
+      {
+        "from": "assets/menu-icon.png",
+        "to": "assets/menu-icon.png"
       }
     ],
     "afterPack": "./afterPack.cjs",

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, protocol, net } from "electron";
+import { app, BrowserWindow, ipcMain, shell, protocol, net, Tray, Menu, nativeImage } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { config as loadDotenv } from "dotenv";
@@ -43,12 +43,88 @@ protocol.registerSchemesAsPrivileged([
 const frontendDevServerUrl = process.env.FRONTEND_DEV_SERVER_URL || process.env.VITE_DEV_SERVER_URL;
 const isDev = Boolean(frontendDevServerUrl);
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let service: BriefcastAppService;
 let apiBridge: ApiBridgeServer | null = null;
+let isQuitting = false;
 
 function resolveAppIconPath(): string | undefined {
-  const candidate = path.resolve(__dirname, "../assets/app-icon.png");
-  return fs.existsSync(candidate) ? candidate : undefined;
+  const candidates = [
+    path.resolve(__dirname, "../assets/app-icon.png"),           // dev build (dist-electron/)
+    path.resolve(process.resourcesPath, "assets/app-icon.png"), // packaged app (extraResources)
+  ];
+  return candidates.find((p) => fs.existsSync(p));
+}
+
+function updateTrayMenu(syncStatus?: string): void {
+  if (!tray) return;
+
+  const statusLabel = syncStatus ?? "Running";
+
+  const contextMenu = Menu.buildFromTemplate([
+    { label: "BriefCast", enabled: false },
+    { type: "separator" },
+    { label: `Status: ${statusLabel}`, enabled: false },
+    { type: "separator" },
+    {
+      label: "Show Window",
+      click: () => {
+        if (mainWindow) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
+      },
+    },
+    {
+      label: "Hide Window",
+      click: () => mainWindow?.hide(),
+    },
+    { type: "separator" },
+    {
+      label: "Quit BriefCast",
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setContextMenu(contextMenu);
+}
+
+function resolveMenuIconPath(): string | undefined {
+  const candidates = [
+    path.resolve(__dirname, "../assets/menu-icon.png"),
+    path.resolve(process.resourcesPath, "assets/menu-icon.png"),
+  ];
+  return candidates.find((p) => fs.existsSync(p));
+}
+
+function createTray(): void {
+  const menuIconPath = resolveMenuIconPath();
+  let trayIcon: Electron.NativeImage;
+
+  if (menuIconPath) {
+    trayIcon = nativeImage.createFromPath(menuIconPath).resize({ width: 22, height: 22 });
+  } else {
+    trayIcon = nativeImage.createEmpty();
+  }
+
+  tray = new Tray(trayIcon);
+  tray.setToolTip("BriefCast");
+
+  // Single click shows/focuses the window
+  tray.on("click", () => {
+    if (mainWindow) {
+      if (mainWindow.isVisible()) {
+        mainWindow.focus();
+      } else {
+        mainWindow.show();
+      }
+    }
+  });
+
+  updateTrayMenu("Running");
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -96,6 +172,18 @@ async function createWindow(): Promise<void> {
     return { action: "deny" };
   });
 
+  // Hide to tray on close instead of quitting
+  mainWindow.on("close", (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      mainWindow?.hide();
+    }
+  });
+
+  // Show dock icon (with running dot) when window is visible; hide it when window is hidden
+  mainWindow.on("show", () => { if (process.platform === "darwin") app.dock.show(); });
+  mainWindow.on("hide", () => { if (process.platform === "darwin") app.dock.hide(); });
+
   if (isDev) {
     const devUrl = frontendDevServerUrl as string;
     try {
@@ -118,11 +206,14 @@ function scheduleNewsSyncEvery6Hours(svc: BriefcastAppService): void {
 
   async function runSync(): Promise<void> {
     console.log("[news-scheduler] running 6-hour news sync + embed…");
+    updateTrayMenu("Syncing news…");
     try {
       const result = await svc.syncNews();
       console.log(`[news-scheduler] sync done — fetched:${result.fetched} inserted:${result.inserted} skipped:${result.skipped}`);
+      updateTrayMenu(`Last sync: ${new Date().toLocaleTimeString()}`);
     } catch (err) {
       console.error("[news-scheduler] sync failed:", err);
+      updateTrayMenu("Sync failed");
     }
   }
 
@@ -296,10 +387,8 @@ app
     }
 
     service = new BriefcastAppService(app.getPath("userData"));
-    const appIconPath = resolveAppIconPath();
-    if (appIconPath && process.platform === "darwin") {
-      app.dock.setIcon(appIconPath);
-    }
+    // Start with dock hidden; it will reappear via the window "show" event
+    if (process.platform === "darwin") app.dock.hide();
 
     const enableApiBridge = process.env.BRIEFCAST_ENABLE_API_BRIDGE === "1";
     if (enableApiBridge) {
@@ -310,12 +399,17 @@ app
     }
 
     registerIpcHandlers();
+    createTray();
     await createWindow();
     scheduleNewsSyncEvery6Hours(service);
     scheduleDailyGeneration(service);
 
     app.on("activate", async () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
+      // On macOS, clicking the dock icon re-shows the window
+      if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+      } else {
         await createWindow();
       }
     });
@@ -326,10 +420,20 @@ app
   });
 
 app.on("window-all-closed", () => {
+  // On macOS, keep the app alive in the menu bar even when all windows are closed.
+  // On other platforms quit normally.
   if (process.platform !== "darwin") app.quit();
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
+  if (!isQuitting) {
+    // Block any quit not initiated by our tray "Quit BriefCast" button
+    // (e.g. dock right-click → Quit, Cmd+Q, etc.)
+    event.preventDefault();
+    return;
+  }
+  tray?.destroy();
+  tray = null;
   apiBridge?.stop();
   apiBridge = null;
 });
