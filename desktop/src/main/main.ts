@@ -105,7 +105,7 @@ function createTray(): void {
   let trayIcon: Electron.NativeImage;
 
   if (menuIconPath) {
-    trayIcon = nativeImage.createFromPath(menuIconPath).resize({ width: 22, height: 22 });
+    trayIcon = nativeImage.createFromPath(menuIconPath).resize({ width: 40, height: 40 });
   } else {
     trayIcon = nativeImage.createEmpty();
   }
