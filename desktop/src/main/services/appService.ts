@@ -22,7 +22,6 @@ import {
   MediaResourcePayload,
   Podcast,
   PlaylistInfo,
-  PlaylistItem,
   PreferenceActivityInput,
   RecommendationPodcast,
   SearchMode,
@@ -91,6 +90,39 @@ function dateKeyNow(): string {
 
 function clip(text: string, max = 1600): string {
   return text.length <= max ? text : `${text.slice(0, max)}...`;
+}
+
+const NEWS_FRESHNESS_MS = 24 * 60 * 60 * 1000;
+const NEWS_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
+const GLOBAL_HOT_NEWS_COUNT = 3;
+
+function freshCutoff(now = Date.now()): number {
+  return now - NEWS_FRESHNESS_MS;
+}
+
+function isFreshArticle(article: { publishedAt: number }, now = Date.now()): boolean {
+  return Number.isFinite(article.publishedAt) && article.publishedAt >= freshCutoff(now);
+}
+
+function uniqueById<T extends { id: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    if (!item.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
+}
+
+function looksLikeGlobalHotNews(article: { title: string; summary?: string; content?: string; sourceName?: string }): boolean {
+  const text = `${article.title} ${article.summary ?? ""} ${article.content ?? ""} ${article.sourceName ?? ""}`.toLowerCase();
+  return /\b(economy|economic|inflation|central bank|federal reserve|fed|interest rate|tariff|trade|market|markets|stock|stocks|bond|bonds|oil|currency|dollar|euro|yuan|earnings|finance|financial|bank|banking|election|government|minister|president|congress|senate|parliament|policy|geopolitic|war|ceasefire|sanction|ukraine|russia|china|taiwan|middle east|israel|gaza|iran|nato|united nations|global)\b/.test(text);
+}
+
+function compareByFreshnessThenPublished<T extends { publishedAt: number }>(a: T, b: T): number {
+  const freshDelta = Number(isFreshArticle(b)) - Number(isFreshArticle(a));
+  return freshDelta || b.publishedAt - a.publishedAt;
 }
 
 function buildBriefingPrompt(topics: string[], articles: SearchResult[], todayKey: string): string {
@@ -223,6 +255,74 @@ export class BriefcastAppService {
   /** Stamps the current time as the last completed sync. */
   private markSyncTime(): void {
     this.legacyState.setEnvConfig({ lastNewsSyncAt: String(Date.now()) });
+  }
+
+
+  /** Keep recommendation/daily selection grounded in recently fetched news. */
+  private async ensureFreshNews(maxAgeMs = NEWS_REFRESH_INTERVAL_MS): Promise<void> {
+    const lastSync = this.getLastSyncTime();
+    const hasFresh = this.db.recentArticles(100).some((item) => isFreshArticle(item));
+    if (!lastSync || Date.now() - lastSync > maxAgeMs || !hasFresh) {
+      console.log("[fresh-news] refreshing news before selection — lastSync:", lastSync || "never", "hasFresh:", hasFresh);
+      try {
+        await this.syncNews();
+      } catch (err) {
+        console.warn("[fresh-news] sync failed; continuing with cached fresh articles if any:", err instanceof Error ? err.message : err);
+      }
+    }
+  }
+
+  private async recommendationImageResource(): Promise<string> {
+    try {
+      const manifest = await this.mediaResources.getManifest();
+      return manifest.defaults.speakerImage || "default.png";
+    } catch (err) {
+      console.warn("[recommendations] failed to load media manifest, using default image:", err instanceof Error ? err.message : err);
+      return "default.png";
+    }
+  }
+
+  private async ingestLiveHeadlines(limit: number): Promise<void> {
+    const embeddingModel =
+      this.settings.providers.activeProvider === "openai-compatible"
+        ? this.settings.providers.openaiCompatible.embeddingModel || "local-hash-v1"
+        : "local-hash-v1";
+
+    const headlines = await fetchTopHeadlines(limit);
+    const freshHeadlines = headlines.filter((h) => isFreshArticle(h));
+    for (const headline of freshHeadlines) {
+      if (this.db.articleExistsByUrl(headline.url)) continue;
+      const searchable = `${headline.title}\n${headline.summary}\n${headline.content}`.trim();
+      if (searchable.length < 12) continue;
+      const vector = await embedText(this.settings, searchable);
+      this.db.upsertArticle(headline, vector, embeddingModel);
+    }
+  }
+
+  private async getGlobalHotNews(limit = GLOBAL_HOT_NEWS_COUNT): Promise<RecommendationPodcast[]> {
+    const imageResource = await this.recommendationImageResource();
+    const historySeen = new Set(this.db.getHistory(600).map((item) => item.recommendationId));
+
+    try {
+      await Promise.race([
+        this.ingestLiveHeadlines(Math.max(30, limit * 12)),
+        new Promise<void>((_, reject) => setTimeout(() => reject(new Error("headline ingest timeout")), 10000))
+      ]);
+    } catch (err) {
+      console.warn("[daily-hot-news] live headline ingest unavailable:", err instanceof Error ? err.message : err);
+    }
+
+    const freshRecent = this.db
+      .getRecommendations(120, imageResource)
+      .filter((item) => isFreshArticle(item) && !historySeen.has(item.id));
+
+    const hot = freshRecent.filter(looksLikeGlobalHotNews);
+    const selected = (hot.length ? hot : freshRecent)
+      .sort((a, b) => b.publishedAt - a.publishedAt)
+      .slice(0, limit);
+
+    console.log(`[daily-hot-news] selected ${selected.length}/${limit} fresh global lead stories`);
+    return selected;
   }
 
   async syncNews(): Promise<SyncResult> {
@@ -359,11 +459,24 @@ export class BriefcastAppService {
       }
     }
 
+    // Always add broad front-page headlines so daily briefings can lead with global political/economic/financial news,
+    // not only sources implied by the user's preference profile.
+    try {
+      const headlines = await fetchTopHeadlines(30);
+      console.log("[syncNews] Top headlines returned", headlines.length, "articles");
+      all.push(...headlines);
+    } catch (error) {
+      sourceErrors.push(`top-headlines:${error instanceof Error ? error.message : String(error)}`);
+      console.error("[syncNews] Top headlines error:", error);
+    }
+
     const deduped = dedupeArticles(all);
     console.log("[syncNews] total fetched:", all.length, "after dedup:", deduped.length);
+    const freshDeduped = deduped.filter((article) => isFreshArticle(article));
+    console.log("[syncNews] fresh within 24h:", freshDeduped.length, "stale skipped before ingest:", deduped.length - freshDeduped.length);
 
-    // Scrape og:image from article pages for any articles missing an image
-    await enrichWithArticleImages(deduped);
+    // Scrape og:image from article pages for any fresh articles missing an image
+    await enrichWithArticleImages(freshDeduped);
 
     let inserted = 0;
     let updated = 0;
@@ -375,7 +488,7 @@ export class BriefcastAppService {
         ? this.settings.providers.openaiCompatible.embeddingModel || "local-hash-v1"
         : "local-hash-v1";
 
-    for (const article of deduped) {
+    for (const article of freshDeduped) {
       // Check if article already exists
       if (this.db.articleExistsByUrl(article.url)) {
         // Even for existing articles, update image if we have one and they don't
@@ -410,7 +523,7 @@ export class BriefcastAppService {
     this.markSyncTime();
 
     return {
-      fetched: deduped.length,
+      fetched: freshDeduped.length,
       inserted,
       updated,
       skipped
@@ -496,16 +609,32 @@ export class BriefcastAppService {
   }
 
   async generateDailyBriefing(): Promise<GenerateBriefingResult> {
+    await this.ensureFreshNews();
     const topics = this.settings.preferences.topics.filter(Boolean);
     console.log("[briefing] starting — provider:", this.settings.providers.activeProvider, "topics:", topics);
 
     const gathered = new Map<string, SearchResult>();
+    const hotBriefingNews = await this.getGlobalHotNews(GLOBAL_HOT_NEWS_COUNT);
+    const hotBriefingIds = new Set(hotBriefingNews.map((item) => item.id));
+    for (const item of hotBriefingNews) {
+      gathered.set(item.id, {
+        id: item.id,
+        title: item.title,
+        url: item.url,
+        sourceType: item.sourceType,
+        sourceName: item.sourceName,
+        summary: item.summary,
+        content: item.summary,
+        publishedAt: item.publishedAt,
+        imageUrl: item.imageUrl,
+      });
+    }
 
     if (topics.length) {
       for (const topic of topics) {
         console.log("[briefing] embedding topic:", topic);
         const queryVector = await embedText(this.settings, topic);
-        const matches = this.db.hybridSearch(topic, queryVector, 8);
+        const matches = this.db.hybridSearch(topic, queryVector, 16).filter((item) => isFreshArticle(item)).slice(0, 8);
         console.log(`[briefing] topic "${topic}" → ${matches.length} articles`);
         for (const item of matches) {
           gathered.set(item.id, item);
@@ -515,13 +644,16 @@ export class BriefcastAppService {
 
     if (!gathered.size) {
       console.log("[briefing] no topic matches — falling back to recent articles");
-      for (const item of this.db.recentArticles(20)) {
+      for (const item of this.db.recentArticles(40).filter((article) => isFreshArticle(article)).slice(0, 20)) {
         gathered.set(item.id, item);
       }
     }
 
     const articlesUsed = [...gathered.values()]
-      .sort((a, b) => b.publishedAt - a.publishedAt)
+      .sort((a, b) => {
+        const hotDelta = Number(hotBriefingIds.has(b.id)) - Number(hotBriefingIds.has(a.id));
+        return hotDelta || b.publishedAt - a.publishedAt;
+      })
       .slice(0, 20);
 
     console.log(`[briefing] gathered ${articlesUsed.length} articles for prompt`);
@@ -623,6 +755,9 @@ export class BriefcastAppService {
   private async buildPreferenceDescription(): Promise<string> {
     const { topics, region, language } = this.settings.preferences;
     const topicList = topics.filter(Boolean).join(", ") || "general news";
+    const selectedTopicHint = topics.length
+      ? `Selected topic and subtopic signals: ${topics.filter(Boolean).join(", ")}.`
+      : "";
     const behaviorSummary = this.buildBehavioralSignalSummary();
 
     // Resolve city in parallel — best-effort; don't block if it fails
@@ -643,6 +778,7 @@ export class BriefcastAppService {
         "",
         `User preferences:`,
         `  Topics of interest: ${topicList}`,
+        ...(selectedTopicHint ? [`  ${selectedTopicHint}`] : []),
         `  Region: ${region || "US"}`,
         `  Language: ${language || "English"}`,
         ...(city
@@ -707,26 +843,16 @@ export class BriefcastAppService {
   }
 
   async getRecommendations(limit = 100): Promise<RecommendationPodcast[]> {
-    // Only block for seed sync when the DB is truly empty; otherwise return immediately.
-    const hasData = this.db.recentArticles(1).length > 0;
-    if (!hasData) {
-      try {
-        await Promise.race([
-          this.ensureSeedNews(),
-          new Promise<void>((resolve) => setTimeout(resolve, 8000))
-        ]);
-      } catch (err) {
-        console.warn("[getRecommendations] ensureSeedNews failed/timed out:", err instanceof Error ? err.message : err);
-      }
+    try {
+      await Promise.race([
+        this.ensureFreshNews(),
+        new Promise<void>((resolve) => setTimeout(resolve, 10000))
+      ]);
+    } catch (err) {
+      console.warn("[getRecommendations] fresh news sync failed/timed out:", err instanceof Error ? err.message : err);
     }
 
-    let imageResource = "default.png";
-    try {
-      const manifest = await this.mediaResources.getManifest();
-      imageResource = manifest.defaults.speakerImage || "default.png";
-    } catch (err) {
-      console.warn("[getRecommendations] failed to load media manifest, using default image:", err instanceof Error ? err.message : err);
-    }
+    const imageResource = await this.recommendationImageResource();
 
     // Exclude items already in trending cache to avoid duplication
     const trendingIds = new Set(this._trendingCache.items.map((t) => t.id));
@@ -735,6 +861,7 @@ export class BriefcastAppService {
     const fallbackCandidates = this.db
       .getRecommendations(Math.max(limit * 4, 160), imageResource)
       .filter((item) => !historySeen.has(item.id) && !trendingIds.has(item.id))
+      .sort(compareByFreshnessThenPublished)
       .slice(0, limit);
 
     try {
@@ -755,6 +882,10 @@ export class BriefcastAppService {
       if (semanticResults.length) {
         const filtered = semanticResults
           .filter((r) => !historySeen.has(r.id) && !trendingIds.has(r.id))
+          .sort((a, b) => {
+            const freshDelta = Number(isFreshArticle(b)) - Number(isFreshArticle(a));
+            return freshDelta || (b.semanticScore ?? b.hybridScore ?? 0) - (a.semanticScore ?? a.hybridScore ?? 0) || b.publishedAt - a.publishedAt;
+          })
           .slice(0, limit)
           .map((r) => ({
             id: r.id,
@@ -1711,7 +1842,7 @@ export class BriefcastAppService {
         }
         const id = this.db.getArticleIdByUrl(h.url);
         if (!id) continue;
-        // Skip if already in history
+        // Skip already-listened items; freshness is handled by ranking.
         if (historySeen.has(id)) continue;
         fresh.push({
           id,
@@ -1730,8 +1861,9 @@ export class BriefcastAppService {
       }
 
       if (fresh.length) {
-        this._trendingCache = { ts: now, items: fresh };
-        return fresh;
+        const ranked = fresh.sort(compareByFreshnessThenPublished);
+        this._trendingCache = { ts: now, items: ranked };
+        return ranked.slice(0, limit);
       }
     } catch (err) {
       console.warn("[getTrending] live headline fetch failed, falling back to recent articles:", err instanceof Error ? err.message : err);
@@ -1740,7 +1872,7 @@ export class BriefcastAppService {
     // Fallback: most recent articles from DB, excluding history
     const fallback = this.db.getRecommendations(limit * 3, imageResource)
       .filter((item) => !historySeen.has(item.id))
-      .sort((a, b) => b.publishedAt - a.publishedAt)
+      .sort(compareByFreshnessThenPublished)
       .slice(0, limit);
     this._trendingCache = { ts: now, items: fallback };
     return fallback;
@@ -1909,7 +2041,7 @@ export class BriefcastAppService {
     if (existing && existing.audio_url && await this.audioFileExists(existing.audio_url)) {
       const clean = this.normalizePodcast(existing);
       this.podcastCache.set(cacheKey, clean);
-      console.log("[getDailyPodcast] returning cached daily podcast:", cacheKey);
+      console.log("[getDailyPodcast] returning today's cached daily podcast:", cacheKey);
       return clean;
     }
     console.log("[getDailyPodcast] no valid cached podcast for", today, "— starting generation");
@@ -2008,9 +2140,18 @@ export class BriefcastAppService {
   private async _runDailyPodcastGeneration(today: string): Promise<Podcast | null> {
     const cacheKey = `daily-${today}`;
 
-    await this.ensureSeedNews();
-    const storyCount = Math.max(1, Math.min(20, Math.floor(this.settings.preferences.dailyBriefingCount || 5)));
-    const recs = await this.getRecommendations(storyCount);
+    await this.ensureFreshNews(0);
+    const personalizedCount = Math.max(1, Math.min(20, Math.floor(this.settings.preferences.dailyBriefingCount || 5)));
+    const hotNewsCount = GLOBAL_HOT_NEWS_COUNT;
+    const [hotNews, personalized] = await Promise.all([
+      this.getGlobalHotNews(hotNewsCount),
+      this.getRecommendations(personalizedCount + hotNewsCount),
+    ]);
+    const hotIds = new Set(hotNews.map((item) => item.id));
+    const recs = uniqueById([
+      ...hotNews,
+      ...personalized.filter((item) => isFreshArticle(item) && !hotIds.has(item.id)).slice(0, personalizedCount),
+    ]);
     if (!recs.length) {
       console.warn("[generateDailyPodcastInternal] no recommendations — cannot generate");
       return null;
@@ -2025,6 +2166,7 @@ export class BriefcastAppService {
       resourceDir: manifest.resourceDir,
       settings: this.settings,
       location: location ?? undefined,
+      title: `BriefCast Daily – ${today}`,
       articles: recs.map((r) => ({
         id: r.id,
         title: r.title,

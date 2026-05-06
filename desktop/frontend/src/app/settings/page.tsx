@@ -59,6 +59,21 @@ const inp = "w-full px-3 py-2 text-sm bg-white/10 border border-white/20 rounded
 const lbl = "block text-white/80 text-xs font-medium mb-1";
 const card = "bg-white/10 backdrop-blur-md rounded-xl p-5 shadow-xl space-y-3";
 
+const TOPIC_CATALOG = [
+  { topic: "Politics", subtopics: ["US politics", "global politics", "elections", "public policy", "geopolitics"] },
+  { topic: "Economy", subtopics: ["macro economy", "inflation", "interest rates", "jobs", "trade"] },
+  { topic: "Finance", subtopics: ["markets", "stocks", "crypto", "banking", "personal finance"] },
+  { topic: "Technology", subtopics: ["artificial intelligence", "startups", "consumer tech", "cybersecurity", "software"] },
+  { topic: "Science", subtopics: ["space", "climate", "medicine", "energy", "research"] },
+  { topic: "World", subtopics: ["Asia", "Europe", "Middle East", "Africa", "Americas"] },
+  { topic: "Business", subtopics: ["companies", "earnings", "retail", "media", "supply chains"] },
+  { topic: "Culture", subtopics: ["film", "music", "sports", "books", "lifestyle"] },
+];
+
+function normalizeTopic(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
 export default function SettingsPage() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULTS);
   const [loading, setLoading] = useState(true);
@@ -117,6 +132,20 @@ export default function SettingsPage() {
     setSettings((s) => ({ ...s, providers: { ...s.providers, [k]: v } }));
   const setSrc = (k: string, v: unknown) =>
     setSettings((s) => ({ ...s, sources: { ...s.sources, [k]: v } }));
+
+  const selectedTopics = new Set(settings.preferences.topics.map((topic) => normalizeTopic(topic).toLowerCase()));
+  const topicSelected = (topic: string) => selectedTopics.has(normalizeTopic(topic).toLowerCase());
+  const toggleTopic = (topic: string, checked: boolean) => {
+    const normalized = normalizeTopic(topic);
+    setSettings((s) => {
+      const current = s.preferences.topics.map(normalizeTopic).filter(Boolean);
+      const without = current.filter((item) => item.toLowerCase() !== normalized.toLowerCase());
+      return {
+        ...s,
+        preferences: { ...s.preferences, topics: checked ? [...without, normalized] : without }
+      };
+    });
+  };
 
   if (loading) {
     return (
@@ -263,12 +292,46 @@ export default function SettingsPage() {
         {/* Preferences */}
         <div className={card}>
           <h2 className="text-base font-semibold flex items-center gap-2">🎯 Preferences</h2>
-          <div>
-            <label className={lbl}>Topics <span className="text-white/40 font-normal">(comma-separated)</span></label>
-            <input className={inp}
-              value={settings.preferences.topics.join(", ")}
-              onChange={(e) => setSettings((s) => ({ ...s, preferences: { ...s.preferences, topics: e.target.value.split(",").map((t) => t.trim()).filter(Boolean) } }))}
-              placeholder="technology, business, science" />
+          <div className="space-y-3">
+            <div>
+              <label className={lbl}>Topic picker</label>
+              <p className="text-white/45 text-xs mb-3">Select topics and subtopics. These are saved into your preference list and used by the recommendation matching prompt.</p>
+              <div className="grid grid-cols-1 gap-3">
+                {TOPIC_CATALOG.map(({ topic, subtopics }) => (
+                  <div key={topic} className="rounded-lg border border-white/10 bg-white/5 p-3">
+                    <label className="flex items-center gap-2 text-sm font-semibold text-white/90">
+                      <input
+                        type="checkbox"
+                        checked={topicSelected(topic)}
+                        onChange={(e) => toggleTopic(topic, e.target.checked)}
+                        className="w-4 h-4 accent-amber-500"
+                      />
+                      {topic}
+                    </label>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {subtopics.map((subtopic) => (
+                        <label key={subtopic} className={`text-xs px-2 py-1 rounded-full border cursor-pointer ${topicSelected(subtopic) ? "bg-amber-500/30 border-amber-400 text-white" : "bg-white/5 border-white/10 text-white/65"}`}>
+                          <input
+                            type="checkbox"
+                            checked={topicSelected(subtopic)}
+                            onChange={(e) => toggleTopic(subtopic, e.target.checked)}
+                            className="sr-only"
+                          />
+                          {subtopic}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className={lbl}>Selected preference terms <span className="text-white/40 font-normal">(editable, comma-separated)</span></label>
+              <input className={inp}
+                value={settings.preferences.topics.join(", ")}
+                onChange={(e) => setSettings((s) => ({ ...s, preferences: { ...s.preferences, topics: e.target.value.split(",").map((t) => normalizeTopic(t)).filter(Boolean) } }))}
+                placeholder="technology, business, science" />
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div><label className={lbl}>Region</label>

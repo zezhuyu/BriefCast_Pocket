@@ -244,6 +244,28 @@ async function fetchWeatherData(location: string): Promise<string | null> {
   }
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWeatherDataWithRetries(location: string, attempts = 3): Promise<string | null> {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const rawWeather = await fetchWeatherData(location);
+    if (rawWeather) {
+      if (attempt > 1) console.log(`[pipeline] weather fetch succeeded on attempt ${attempt}/${attempts}`);
+      return rawWeather;
+    }
+
+    if (attempt < attempts) {
+      console.warn(`[pipeline] weather fetch attempt ${attempt}/${attempts} failed; retrying…`);
+      await sleep(500 * attempt);
+    }
+  }
+
+  console.warn(`[pipeline] weather fetch failed after ${attempts} attempts — skipping forecast`);
+  return null;
+}
+
 /** Ask the LLM to rewrite structured weather data as a radio weather forecast. */
 async function buildWeatherScript(settings: AppSettings, rawWeather: string): Promise<string | null> {
   const systemPrompt = [
@@ -657,7 +679,7 @@ export async function generateDailyPodcast(opts: PipelineOptions): Promise<Pipel
     // 3. Weather forecast TTS (optional, requires location)
     if (location) {
       console.log("[pipeline] fetching weather for", location);
-      const rawWeather = await fetchWeatherData(location);
+      const rawWeather = await fetchWeatherDataWithRetries(location);
       if (rawWeather) {
         const weatherScript = await buildWeatherScript(settings, rawWeather);
         if (weatherScript) {
@@ -746,7 +768,7 @@ export async function generateDailyPodcast(opts: PipelineOptions): Promise<Pipel
     // Weather forecast (no ffmpeg mix — append as a separate segment)
     if (location) {
       console.log("[pipeline] fetching weather for", location);
-      const rawWeather = await fetchWeatherData(location);
+      const rawWeather = await fetchWeatherDataWithRetries(location);
       if (rawWeather) {
         const weatherScript = await buildWeatherScript(settings, rawWeather);
         if (weatherScript) {
