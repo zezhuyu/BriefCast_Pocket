@@ -42,11 +42,17 @@ protocol.registerSchemesAsPrivileged([
 
 const frontendDevServerUrl = process.env.FRONTEND_DEV_SERVER_URL || process.env.VITE_DEV_SERVER_URL;
 const isDev = Boolean(frontendDevServerUrl);
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let service: BriefcastAppService;
 let apiBridge: ApiBridgeServer | null = null;
 let isQuitting = false;
+let shouldShowWindowWhenReady = !app.getLoginItemSettings().wasOpenedAtLogin;
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
 
 function resolveAppIconPath(): string | undefined {
   const candidates = [
@@ -102,6 +108,48 @@ function updateTrayMenu(syncStatus?: string): void {
 
   tray.setContextMenu(contextMenu);
 }
+
+function showMainWindow(): void {
+  if (!mainWindow) {
+    shouldShowWindowWhenReady = true;
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+  if (process.platform === "darwin") {
+    app.dock.show();
+  }
+}
+
+app.on("second-instance", () => {
+  showMainWindow();
+});
+
+app.on("open-file", (event) => {
+  event.preventDefault();
+  showMainWindow();
+});
+
+app.on("open-url", (event) => {
+  event.preventDefault();
+  showMainWindow();
+});
+
+app.on("activate", async () => {
+  // On macOS, clicking the installed app / dock icon should show the window.
+  if (mainWindow) {
+    showMainWindow();
+  } else if (app.isReady()) {
+    await createWindow();
+    showMainWindow();
+  } else {
+    shouldShowWindowWhenReady = true;
+  }
+});
 
 function resolveMenuIconPath(): string | undefined {
   const candidates = [
@@ -450,6 +498,10 @@ function registerIpcHandlers(): void {
 app
   .whenReady()
   .then(async () => {
+    if (!gotSingleInstanceLock) {
+      return;
+    }
+
     // Serve the static Next.js export under app://briefcast/ so that absolute
     // paths like /_next/static/... resolve correctly (they don't with file://).
     if (!isDev) {
@@ -480,18 +532,11 @@ app
     registerIpcHandlers();
     createTray();
     await createWindow();
+    if (shouldShowWindowWhenReady) {
+      showMainWindow();
+    }
     scheduleNewsSyncEvery6Hours(service);
     scheduleDailyGeneration(service);
-
-    app.on("activate", async () => {
-      // On macOS, clicking the dock icon re-shows the window
-      if (mainWindow) {
-        mainWindow.show();
-        mainWindow.focus();
-      } else {
-        await createWindow();
-      }
-    });
   })
   .catch((error) => {
     console.error("[app] Startup failure:", error);

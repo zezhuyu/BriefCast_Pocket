@@ -121,7 +121,7 @@ export class ApiBridgeServer {
         return true;
       }
       const file = await this.service.readLegacyAssetBuffer(kind as "image" | "audio" | "transcript", fileName);
-      this.writeBinary(res, 200, file.mimeType, file.buffer);
+      this.writeBinary(req, res, 200, file.mimeType, file.buffer);
       return true;
     }
 
@@ -133,7 +133,7 @@ export class ApiBridgeServer {
         return true;
       }
       const file = await this.service.readMediaResourceBuffer(fileName);
-      this.writeBinary(res, 200, file.mimeType, file.buffer);
+      this.writeBinary(req, res, 200, file.mimeType, file.buffer);
       return true;
     }
 
@@ -439,7 +439,7 @@ export class ApiBridgeServer {
       }
 
       const resource = await this.service.readMediaResourceBuffer(rawName);
-      this.writeBinary(res, 200, resource.mimeType, resource.buffer);
+      this.writeBinary(req, res, 200, resource.mimeType, resource.buffer);
       return;
     }
 
@@ -1081,9 +1081,50 @@ export class ApiBridgeServer {
     res.end(payload);
   }
 
-  private writeBinary(res: ServerResponse, statusCode: number, contentType: string, body: Buffer): void {
-    res.statusCode = statusCode;
+  private writeBinary(
+    req: IncomingMessage,
+    res: ServerResponse,
+    statusCode: number,
+    contentType: string,
+    body: Buffer
+  ): void {
+    const totalSize = body.length;
+    const range = req.headers.range;
+
     res.setHeader("Content-Type", contentType);
+    res.setHeader("Accept-Ranges", "bytes");
+
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if (!match) {
+        res.statusCode = 416;
+        res.setHeader("Content-Range", `bytes */${totalSize}`);
+        res.end();
+        return;
+      }
+
+      const requestedStart = match[1] ? Number.parseInt(match[1], 10) : 0;
+      const requestedEnd = match[2] ? Number.parseInt(match[2], 10) : totalSize - 1;
+      const start = Number.isFinite(requestedStart) ? Math.max(0, requestedStart) : 0;
+      const end = Number.isFinite(requestedEnd) ? Math.min(totalSize - 1, requestedEnd) : totalSize - 1;
+
+      if (start > end || start >= totalSize) {
+        res.statusCode = 416;
+        res.setHeader("Content-Range", `bytes */${totalSize}`);
+        res.end();
+        return;
+      }
+
+      const chunk = body.subarray(start, end + 1);
+      res.statusCode = 206;
+      res.setHeader("Content-Length", String(chunk.length));
+      res.setHeader("Content-Range", `bytes ${start}-${end}/${totalSize}`);
+      res.end(chunk);
+      return;
+    }
+
+    res.statusCode = statusCode;
+    res.setHeader("Content-Length", String(totalSize));
     res.end(body);
   }
 }

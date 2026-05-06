@@ -78,6 +78,7 @@ type PlayerContextType = {
   setCurrentPodcast: (podcast: Podcast) => void;
   togglePlayPause: () => void;
   seekTo: (time: number) => void;
+  playFrom: (time: number) => Promise<void>;
   formatTime: (time: number) => string;
   addToPlaylist: (playlistId: string, podcast: Podcast) => void;
   deletePlaylist: (playlistId: string) => void;
@@ -818,10 +819,14 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     loadPodcast();
   }, [])
 
-  // Update audio source when podcast changes.
+  // Update audio source when the podcast/audio URL changes.
   // isPlayingTransition is intentionally NOT in the dep array — we use the ref
   // instead so that the transition ending (state flip) does not re-trigger this
   // effect and replay the old podcast while the next one is still loading.
+  //
+  // Do not depend on userHasInteracted here. Click-to-seek marks the user as
+  // interacted, and re-running this effect would call audio.load(), which resets
+  // currentTime to 0 and makes transcript/progress clicks replay from the start.
   useEffect(() => {
     if (!audioRef.current || !currentPodcast) return;
     // Ref-based guard: transition src is owned by loadAndPlayTransition.
@@ -878,7 +883,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
     };
 
     loadAudioSource();
-  }, [currentPodcast, userHasInteracted]);
+  }, [currentPodcast?.id, currentPodcast?.audio_url]);
 
   // Format time in MM:SS
   const formatTime = (timeInSeconds: number) => {
@@ -937,10 +942,13 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
   // Seek to specific time
   const seekTo = (time: number) => {
     if (!audioRef.current) return;
+    const safeTime = Number.isFinite(time)
+      ? Math.max(0, Number.isFinite(duration) && duration > 0 ? Math.min(time, duration) : time)
+      : 0;
     
     // Log the seek action
     if (currentPodcast) {
-      logUserAction('seek', { from: currentTime, to: time });
+      logUserAction('seek', { from: currentTime, to: safeTime });
       
       // Also update the listening progress with this seek action
       setUserActivity(prev => {
@@ -950,18 +958,62 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
           ...prev,
           listeningProgress: {
             ...prev.listeningProgress,
-            lastPosition: time,
+            lastPosition: safeTime,
             positionLog: [
               ...prev.listeningProgress.positionLog, 
-              { time: Date.now(), position: time }
+              { time: Date.now(), position: safeTime }
             ]
           }
         };
       });
     }
     
-    audioRef.current.currentTime = time;
-    setCurrentTime(time);
+    audioRef.current.currentTime = safeTime;
+    setCurrentTime(safeTime);
+  };
+
+  const playFrom = async (time: number) => {
+    if (!audioRef.current || !currentPodcast) return;
+
+    const safeTime = Number.isFinite(time)
+      ? Math.max(0, Number.isFinite(duration) && duration > 0 ? Math.min(time, duration) : time)
+      : 0;
+
+    try {
+      const audio = audioRef.current;
+
+      setUserHasInteracted(true);
+      setAutoplayBlocked(false);
+      setAutoplayEnabled(true);
+
+      if (audio.readyState < 1) {
+        await new Promise<void>((resolve) => {
+          audio.addEventListener('loadedmetadata', () => resolve(), { once: true });
+        });
+      }
+
+      audio.currentTime = safeTime;
+      setCurrentTime(safeTime);
+
+      if (!isPlaying) {
+        await audio.play();
+        setIsPlaying(true);
+        // Some Electron/Chromium media backends begin playback at 0 after a
+        // play() call if the seek was issued before canplay. Re-apply the
+        // requested position immediately after playback starts so click-to-seek
+        // cannot fall back to the beginning.
+        if (Math.abs(audio.currentTime - safeTime) > 0.75) {
+          audio.currentTime = safeTime;
+          setCurrentTime(safeTime);
+        }
+      } else if (Math.abs(audio.currentTime - safeTime) > 0.75) {
+        audio.currentTime = safeTime;
+        setCurrentTime(safeTime);
+      }
+    } catch (err) {
+      console.error('Error seeking and playing:', err);
+      setIsPlaying(false);
+    }
   };
 
   // Create a new playlist
@@ -1334,6 +1386,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
         setCurrentPodcast: handleSetCurrentPodcast,
         togglePlayPause,
         seekTo,
+        playFrom,
         formatTime,
         addToPlaylist,
         deletePlaylist,

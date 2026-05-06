@@ -1,6 +1,7 @@
 "use client"
 import Image from "next/image";
 import { useMemo, useState, useRef, useEffect } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import Link from "next/link";
 import { useSearchParams, useRouter } from "next/navigation";
 import { usePlayer } from "@/context/PlayerContext";
@@ -371,6 +372,7 @@ export default function Home() {
     setCurrentPodcast,
     togglePlayPause,
     seekTo,
+    playFrom,
     formatTime,
     currentPlaylist,
     playPrevious,
@@ -473,7 +475,7 @@ export default function Home() {
         const data = await convertLRCToTranscriptData(url)
         // Transform the data to match the expected format in the scrolling logic
         const formattedData = data.map((item: { start?: number; text: string }) => ({
-          time: item.start || 0,
+          time: item.start ?? 0,
           text: item.text
         }));
         setTranscriptData(formattedData);
@@ -520,7 +522,45 @@ export default function Home() {
   }, [currentPodcast]);
 
   // Calculate progress percentage
-  const progressPercentage = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const effectiveDuration =
+    Number.isFinite(duration) && duration > 0
+      ? duration
+      : Number(currentPodcast?.duration_seconds || 0);
+  const progressPercentage = effectiveDuration > 0 ? (currentTime / effectiveDuration) * 100 : 0;
+
+  const getRawTranscriptTime = (item: any): number => {
+    const rawTime = item?.time ?? item?.start ?? 0;
+    const parsedTime = Number(rawTime);
+    return Number.isFinite(parsedTime) ? parsedTime : 0;
+  };
+
+  const transcriptTimeScale = useMemo(() => {
+    if (!effectiveDuration || effectiveDuration <= 0 || transcriptData.length < 2) return 1;
+
+    const lastTranscriptTime = transcriptData.reduce(
+      (latest, item) => Math.max(latest, getRawTranscriptTime(item)),
+      0
+    );
+
+    // Generated LRC can drift slower than the final encoded audio. If the last
+    // transcript cue lands noticeably after the actual audio duration, compress
+    // cue times to the loaded audio timeline so highlighting and seeking align.
+    if (lastTranscriptTime > effectiveDuration * 1.05) {
+      return effectiveDuration / lastTranscriptTime;
+    }
+
+    return 1;
+  }, [effectiveDuration, transcriptData]);
+
+  const getTranscriptTime = (item: any): number => {
+    return getRawTranscriptTime(item) * transcriptTimeScale;
+  };
+
+  const isTranscriptItemActive = (index: number): boolean => {
+    const itemTime = getTranscriptTime(transcriptData[index]);
+    const nextItemTime = transcriptData[index + 1] ? getTranscriptTime(transcriptData[index + 1]) : Infinity;
+    return currentTime >= itemTime && currentTime < nextItemTime;
+  };
 
   // Extract vibrant colors for accents - EFFECT 1
   useEffect(() => {
@@ -589,14 +629,7 @@ export default function Home() {
     
     // Find the currently active transcript item
     // Support both data formats (time or start)
-    const activeIndex = transcriptData.findIndex((item, i) => {
-      const itemTime = 'time' in item ? item.time : item.start;
-      const nextItemTime = transcriptData[i+1] 
-        ? ('time' in transcriptData[i+1] ? transcriptData[i+1].time : transcriptData[i+1].start) 
-        : Infinity;
-      
-      return currentTime >= itemTime && currentTime < nextItemTime;
-    });
+    const activeIndex = transcriptData.findIndex((_, i) => isTranscriptItemActive(i));
     
     if (activeIndex !== -1) {
       // Get all transcript paragraphs
@@ -634,7 +667,7 @@ export default function Home() {
         behavior: 'smooth'
       });
     }
-  }, [currentTime, transcriptData, userScrolling, mobileView]);
+  }, [currentTime, transcriptData, transcriptTimeScale, userScrolling, mobileView]);
 
   // Add event handlers to detect user scrolling
   useEffect(() => {
@@ -792,30 +825,56 @@ export default function Home() {
     }
   };
 
-  // Handle seeking when clicking on waveform
-  const handleWaveformClick = (event: React.MouseEvent<HTMLDivElement>) => {
+  const waveformDragRef = useRef(false);
+
+  const getWaveformTimeFromClientX = (element: HTMLDivElement, clientX: number): number => {
+    const waveformRect = element.getBoundingClientRect();
+    const clickPosition = Math.max(0, Math.min(1, (clientX - waveformRect.left) / waveformRect.width));
+    return clickPosition * (effectiveDuration || 0);
+  };
+
+  const handleWaveformPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    waveformDragRef.current = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setHoverPosition(Math.max(0, Math.min(1, (event.clientX - event.currentTarget.getBoundingClientRect().left) / event.currentTarget.getBoundingClientRect().width)));
+    void playFrom(getWaveformTimeFromClientX(event.currentTarget, event.clientX));
+    setUserScrolling(false);
+  };
+
+  const handleWaveformPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const waveformRect = event.currentTarget.getBoundingClientRect();
-    const clickPosition = (event.clientX - waveformRect.left) / waveformRect.width;
-    const newTime = clickPosition * (duration || 0);
-    
-    seekTo(newTime);
-    
-    if (!isPlaying) {
-      handlePlayRequest();
+    const position = Math.max(0, Math.min(1, (event.clientX - waveformRect.left) / waveformRect.width));
+    setHoverPosition(position);
+
+    if (waveformDragRef.current) {
+      seekTo(getWaveformTimeFromClientX(event.currentTarget, event.clientX));
     }
+  };
+
+  const handleWaveformPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!waveformDragRef.current) return;
+    waveformDragRef.current = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    void playFrom(getWaveformTimeFromClientX(event.currentTarget, event.clientX));
+  };
+
+  const handleWaveformPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    waveformDragRef.current = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    setHoverPosition(-1);
   };
 
   // Update the seekToTranscriptTime function to handle invalid time values
   const seekToTranscriptTime = (time: number) => {
     // Ensure time is a valid, finite number
-    if (time !== undefined && time !== null && isFinite(time)) {
-    seekTo(time);
-    setUserScrolling(false); // Reset user scrolling to allow auto-scroll
-    } else {
-      // If time is invalid, seek to the beginning
-      seekTo(0);
-      setUserScrolling(false);
-    }
+    const parsedTime = Number(time);
+    void playFrom(Number.isFinite(parsedTime) ? parsedTime : 0);
+    setUserScrolling(false);
   };
 
   // Add this function to toggle the mobile overlay
@@ -1201,14 +1260,17 @@ export default function Home() {
                       
                       {/* Waveform Progress Bar - Now clickable */}
                       <div 
-                        className="relative h-16 w-full mb-2 cursor-pointer" 
-                        onClick={handleWaveformClick}
-                        onMouseMove={(e) => {
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          const position = (e.clientX - rect.left) / rect.width;
-                          setHoverPosition(position);
+                        className="relative h-16 w-full mb-2 cursor-pointer select-none touch-none"
+                        onPointerDown={handleWaveformPointerDown}
+                        onPointerMove={handleWaveformPointerMove}
+                        onPointerUp={handleWaveformPointerUp}
+                        onPointerCancel={handleWaveformPointerCancel}
+                        onLostPointerCapture={() => {
+                          waveformDragRef.current = false;
                         }}
-                        onMouseLeave={() => setHoverPosition(-1)}
+                        onPointerLeave={() => {
+                          if (!waveformDragRef.current) setHoverPosition(-1);
+                        }}
                       >
                         {/* Base waveform with current progress and hover effect */}
                         <div className="absolute inset-0 flex items-center gap-[2px]">
@@ -1465,26 +1527,20 @@ export default function Home() {
                             key={i} 
                             className={`cursor-pointer transition-all hover:bg-white/20 p-3 rounded-lg group relative ${
                               // More precise handling for the first item
-                              (i === 0 && currentTime >= (item.time || 0) && currentTime < (transcriptData[1] ? (transcriptData[1].time || transcriptData[1].start) : Infinity)) ||
-                              // Normal case for other items
-                              (i > 0 && currentTime >= (item.time || item.start) && 
-                              currentTime < (transcriptData[i+1] ? (transcriptData[i+1].time || transcriptData[i+1].start) : Infinity))
+                              isTranscriptItemActive(i)
                                 ? 'transform scale-[1.02] bg-white/10' 
                                 : ''
                             }`}
-                            onClick={() => seekToTranscriptTime(item.time || item.start)}
+                            onClick={() => seekToTranscriptTime(getTranscriptTime(item))}
                           >
                             {/* Timestamp that appears on hover */}
                             <span className="absolute left-0 top-0 bg-amber-500 text-white text-xs px-2 py-1 rounded-tl-md opacity-0 group-hover:opacity-100 transition-opacity">
-                              {formatTime(item.time || item.start)}
+                              {formatTime(getTranscriptTime(item))}
                             </span>
                             
                             <span className={`transition-colors ${
                               // More precise handling for the first item
-                              (i === 0 && currentTime >= (item.time || 0) && currentTime < (transcriptData[1] ? (transcriptData[1].time || transcriptData[1].start) : Infinity)) ||
-                              // Normal case for other items
-                              (i > 0 && currentTime >= (item.time || item.start) && 
-                              currentTime < (transcriptData[i+1] ? (transcriptData[i+1].time || transcriptData[i+1].start) : Infinity))
+                              isTranscriptItemActive(i)
                                 ? 'text-white font-medium text-lg'
                                 : 'text-gray-300/70'  // Changed from text-gray-400 to text-gray-300/70
                             }`}>
@@ -1633,26 +1689,20 @@ export default function Home() {
                           key={i} 
                           className={`cursor-pointer transition-all hover:bg-white/20 p-3 rounded-lg group relative ${
                             // More precise handling for the first item
-                            (i === 0 && currentTime >= (item.time || 0) && currentTime < (transcriptData[1] ? (transcriptData[1].time || transcriptData[1].start) : Infinity)) ||
-                            // Normal case for other items
-                            (i > 0 && currentTime >= (item.time || item.start) && 
-                            currentTime < (transcriptData[i+1] ? (transcriptData[i+1].time || transcriptData[i+1].start) : Infinity))
+                            isTranscriptItemActive(i)
                               ? 'transform scale-[1.02] bg-white/10' 
                               : ''
                           }`}
-                          onClick={() => seekToTranscriptTime(item.time || item.start)}
+                          onClick={() => seekToTranscriptTime(getTranscriptTime(item))}
                         >
                           {/* Timestamp that appears on hover */}
                           <span className="absolute left-0 top-0 bg-amber-500 text-white text-xs px-2 py-1 rounded-tl-md opacity-0 group-hover:opacity-100 transition-opacity">
-                            {formatTime(item.time || item.start)}
+                            {formatTime(getTranscriptTime(item))}
                           </span>
                           
                           <span className={`transition-colors ${
                             // More precise handling for the first item
-                            (i === 0 && currentTime >= (item.time || 0) && currentTime < (transcriptData[1] ? (transcriptData[1].time || transcriptData[1].start) : Infinity)) ||
-                            // Normal case for other items
-                            (i > 0 && currentTime >= (item.time || item.start) && 
-                            currentTime < (transcriptData[i+1] ? (transcriptData[i+1].time || transcriptData[i+1].start) : Infinity))
+                            isTranscriptItemActive(i)
                               ? 'text-white font-medium text-lg'
                               : 'text-gray-300/70'  // Changed from text-gray-400 to text-gray-300/70
                           }`}>

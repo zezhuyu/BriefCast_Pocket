@@ -340,7 +340,7 @@ function extractFromNextData(html: string): string | undefined {
       const unescaped = cm[1]
         .replace(/\\n/g, "\n").replace(/\\t/g, " ")
         .replace(/\\"/g, '"').replace(/\\\\/g, "\\");
-      const text = htmlToText(unescaped);
+      const text = cleanScrapedText(htmlToText(removeAdLikeHtmlBlocks(unescaped)));
       if (text.split(/\s+/).length >= 100) return text.slice(0, 8000);
     }
   } catch { /* malformed JSON — ignore */ }
@@ -362,6 +362,65 @@ const ARTICLE_SELECTORS = [
   "[class*='entry-content']",
   "main",
 ];
+
+const AD_BLOCK_SELECTOR = [
+  "aside",
+  "iframe",
+  "[role='complementary']",
+  "[aria-label*='advert' i]",
+  "[aria-label*='sponsor' i]",
+  "[class*='ad-' i]",
+  "[class*='ads-' i]",
+  "[class*='advert' i]",
+  "[class*='sponsor' i]",
+  "[class*='promo' i]",
+  "[class*='newsletter' i]",
+  "[class*='related' i]",
+  "[class*='recirc' i]",
+  "[class*='outbrain' i]",
+  "[class*='taboola' i]",
+  "[id*='ad-' i]",
+  "[id*='ads-' i]",
+  "[id*='advert' i]",
+  "[id*='sponsor' i]",
+  "[id*='promo' i]",
+  "[data-testid*='ad' i]",
+  "[data-testid*='advert' i]",
+  "[data-testid*='sponsor' i]",
+  "[data-ad]",
+  "[data-ad-unit]",
+  "[data-ad-slot]",
+].join(",");
+
+const AD_LINE_PATTERNS = [
+  /^\s*(advertisement|advertiser content|sponsored content|sponsored by|paid post|paid content|partner content)\s*$/i,
+  /^\s*(story continues below advertisement|article continues after advertisement|continue reading below|read more below)\s*$/i,
+  /^\s*(sign up|subscribe|newsletter|follow us|share this article|listen to this article)\b/i,
+  /\b(advertisement|sponsored content|paid post|paid content)\b/i,
+  /\b(outbrain|taboola)\b/i,
+];
+
+function cleanScrapedText(text: string): string {
+  const lines = text
+    .replace(/\u00a0/g, " ")
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  const cleaned: string[] = [];
+  for (const line of lines) {
+    if (AD_LINE_PATTERNS.some((pattern) => pattern.test(line))) continue;
+    cleaned.push(line);
+  }
+
+  return cleaned.join("\n\n").trim();
+}
+
+function removeAdLikeHtmlBlocks(html: string): string {
+  return html
+    .replace(/<(script|style|nav|header|footer|aside|figure|iframe)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<[^>]+(?:class|id|aria-label|data-testid|data-component|data-ad|data-ad-unit|data-ad-slot)=["'][^"']*(?:\bad(?:vert|s)?\b|ad-|ads-|sponsor|promo|newsletter|related|recirc|outbrain|taboola)[^"']*["'][^>]*>[\s\S]*?<\/(?:div|section|aside|figure|iframe|ul|ol)>/gi, " ");
+}
 
 /** Fetch an article page and extract og:image + readable body text.
  *  Tries a plain fetch first (with __NEXT_DATA__ fallback for React sites);
@@ -437,22 +496,24 @@ async function scrapeArticlePage(url: string): Promise<ScrapedPage> {
       // Use browser's own DOM to extract text — far more reliable than regex on
       // JS-rendered HTML (handles shadow DOM, dynamic class names, etc.)
       const domExtract = async (): Promise<string> =>
-        page.evaluate((selectors: string[]) => {
+        page.evaluate(({ selectors, adSelector }: { selectors: string[]; adSelector: string }) => {
+          document.querySelectorAll(adSelector).forEach((el) => el.remove());
           for (const sel of selectors) {
             const el = document.querySelector(sel) as HTMLElement | null;
             if (!el) continue;
+            el.querySelectorAll(adSelector).forEach((child) => child.remove());
             const text = (el.innerText || el.textContent || "").trim();
             if (text.split(/\s+/).filter(Boolean).length >= 100) return text;
           }
           return (document.body?.innerText || "").trim();
-        }, ARTICLE_SELECTORS).catch(() => "");
+        }, { selectors: ARTICLE_SELECTORS, adSelector: AD_BLOCK_SELECTOR }).catch(() => "");
 
-      let domText = await domExtract();
+      let domText = cleanScrapedText(await domExtract());
 
       // If content is thin after domcontentloaded, wait for JS to finish rendering
       if (domText.split(/\s+/).filter(Boolean).length < 100) {
         await page.waitForLoadState("networkidle", { timeout: 6000 }).catch(() => {});
-        domText = await domExtract();
+        domText = cleanScrapedText(await domExtract());
       }
 
       const html = await page.content();
@@ -474,14 +535,7 @@ async function scrapeArticlePage(url: string): Promise<ScrapedPage> {
  */
 function extractArticleText(html: string): string | undefined {
   // Strip script/style/nav/header/footer noise
-  const stripped = html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<nav[\s\S]*?<\/nav>/gi, " ")
-    .replace(/<header[\s\S]*?<\/header>/gi, " ")
-    .replace(/<footer[\s\S]*?<\/footer>/gi, " ")
-    .replace(/<aside[\s\S]*?<\/aside>/gi, " ")
-    .replace(/<figure[\s\S]*?<\/figure>/gi, " ");
+  const stripped = removeAdLikeHtmlBlocks(html);
 
   // Try known article container patterns
   const containerPatterns = [
@@ -494,7 +548,7 @@ function extractArticleText(html: string): string | undefined {
   for (const pattern of containerPatterns) {
     const m = stripped.match(pattern);
     if (m) {
-      const text = htmlToText(m[1] ?? m[0]);
+      const text = cleanScrapedText(htmlToText(m[1] ?? m[0]));
       if (text.length > best.length) best = text;
     }
   }
@@ -502,10 +556,10 @@ function extractArticleText(html: string): string | undefined {
   // Fallback: strip all tags from body
   if (best.length < 200) {
     const bodyMatch = stripped.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-    if (bodyMatch) best = htmlToText(bodyMatch[1]);
+    if (bodyMatch) best = cleanScrapedText(htmlToText(bodyMatch[1]));
   }
 
-  const trimmed = best.trim();
+  const trimmed = cleanScrapedText(best).trim();
   // Require at least 100 words to count as real article content
   return trimmed.split(/\s+/).length >= 100 ? trimmed.slice(0, 8000) : undefined;
 }
