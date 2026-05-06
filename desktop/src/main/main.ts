@@ -67,7 +67,7 @@ function updateTrayMenu(syncStatus?: string): void {
     { label: `Status: ${statusLabel}`, enabled: false },
     { type: "separator" },
     {
-      label: "Show Window",
+      label: "Open BriefCast",
       click: () => {
         if (mainWindow) {
           mainWindow.show();
@@ -104,24 +104,23 @@ function createTray(): void {
   const menuIconPath = resolveMenuIconPath();
   let trayIcon: Electron.NativeImage;
 
+  // Use the dedicated menu-bar icon asset.
   if (menuIconPath) {
-    trayIcon = nativeImage.createFromPath(menuIconPath).resize({ width: 40, height: 40 });
+    const sourceIcon = nativeImage.createFromPath(menuIconPath);
+    trayIcon = sourceIcon.resize({ width: 36, height: 36 });
   } else {
     trayIcon = nativeImage.createEmpty();
   }
 
   tray = new Tray(trayIcon);
   tray.setToolTip("BriefCast");
+  if (process.platform === "darwin") {
+    tray.setIgnoreDoubleClickEvents(true);
+  }
 
-  // Single click shows/focuses the window
+  // Clicking the tray icon opens the menu only; it does not open the app window.
   tray.on("click", () => {
-    if (mainWindow) {
-      if (mainWindow.isVisible()) {
-        mainWindow.focus();
-      } else {
-        mainWindow.show();
-      }
-    }
+    tray?.popUpContextMenu();
   });
 
   updateTrayMenu("Running");
@@ -150,6 +149,7 @@ async function createWindow(): Promise<void> {
   const appIconPath = resolveAppIconPath();
 
   mainWindow = new BrowserWindow({
+    show: false,
     width: 1320,
     height: 900,
     minWidth: 1000,
