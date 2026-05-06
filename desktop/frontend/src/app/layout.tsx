@@ -57,11 +57,11 @@ export default function RootLayout({
           <meta httpEquiv="Pragma" content="no-cache" />
           <meta httpEquiv="Expires" content="0" />
         </head>
-        <body className="h-full w-full bg-white overflow-hidden">
+        <body className="h-full w-full overflow-hidden bg-transparent">
           <ProviderStatusBanner />
           <div className="electron-drag-region" aria-hidden="true" />
-          <div className="h-full w-full bg-white flex flex-col">
-            <div className="flex-1 overflow-y-auto">
+          <div className="h-full w-full flex flex-col bg-transparent">
+            <div className="flex-1 overflow-y-auto bg-transparent">
               <Suspense fallback={<div>Loading...</div>}>
                 {children}
               </Suspense>
