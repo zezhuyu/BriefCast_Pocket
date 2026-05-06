@@ -60,12 +60,23 @@ function updateTrayMenu(syncStatus?: string): void {
   if (!tray) return;
 
   const statusLabel = syncStatus ?? "Running";
+  const launchOnLoginEnabled = app.getLoginItemSettings().openAtLogin;
 
   const contextMenu = Menu.buildFromTemplate([
     { label: "BriefCast", enabled: false },
     { type: "separator" },
     { label: `Status: ${statusLabel}`, enabled: false },
     { type: "separator" },
+    {
+      label: "Launch on Login",
+      type: "checkbox",
+      checked: launchOnLoginEnabled,
+      click: (menuItem) => {
+        const nextValue = Boolean(menuItem.checked);
+        app.setLoginItemSettings({ openAtLogin: nextValue });
+        updateTrayMenu(statusLabel);
+      },
+    },
     {
       label: "Open BriefCast",
       click: () => {
