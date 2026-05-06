@@ -130,7 +130,7 @@ function cropMenuIconToLogo(image: Electron.NativeImage): Electron.NativeImage {
   // Keep a healthy margin around the visible logo so the tray icon is not
   // rendered too large. Center the crop on the logo itself rather than using
   // the source image edges.
-  const cropMargin = 140;
+  const cropMargin = 80;
   const cropSide = Math.min(
     width,
     height,
@@ -160,7 +160,7 @@ function createTray(): void {
   if (menuIconPath) {
     const sourceIcon = nativeImage.createFromPath(menuIconPath);
     const croppedIcon = cropMenuIconToLogo(sourceIcon);
-    const TRAY_ICON_SIZE = 24;
+    const TRAY_ICON_SIZE = 22;
     trayIcon = nativeImage.createEmpty();
     for (const scaleFactor of [1, 2]) {
       const px = TRAY_ICON_SIZE * scaleFactor;
