@@ -955,7 +955,7 @@ export default function Home() {
     return (
       <div className={`w-full min-h-screen bg-gradient-to-br from-indigo-900/90 to-purple-900/90 text-white ${isTauri ? 'mt-8' : ''}`}>
         <header className=" backdrop-blur-md ">
-          <div className="w-full px-2 sm:px-4 py-4 flex justify-between items-center">
+          <div className="container mx-auto px-4 py-4 flex justify-between items-center">
             <div className="flex items-center gap-2">
               {/* <Link href="/" className="text-2xl font-bold text-white">BriefCast</Link> */}
             </div>
@@ -977,7 +977,7 @@ export default function Home() {
             </div>
           </div>
         </header>
-        <main className="h-screen w-full px-0 pt-4 pb-12 relative z-10">
+        <main className="h-screen container max-w-6xl mx-auto px-4 pt-4 pb-12 relative z-10">
         {/* {!isTauri &&
           <h1 className="text-4xl font-bold mb-12 text-center bg-gradient-to-r from-amber-500 to-amber-600 text-transparent bg-clip-text">
             BriefCast
@@ -1114,7 +1114,7 @@ export default function Home() {
       {/* <main className="container max-w-6xl mx-auto px-4 py-12 relative z-10"> */}
       <div className={`w-full min-h-screen bg-gradient-to-br from-indigo-900/90 to-purple-900/90 text-white ${isTauri ? 'mt-8' : ''}`}>
         <header className=" backdrop-blur-md ">
-          <div className="w-full px-2 sm:px-4 py-4 flex justify-between items-center">
+          <div className="container mx-auto px-4 py-4 flex justify-between items-center">
             <div className="flex items-center gap-2">
               {/* <Link href="/" className="text-2xl font-bold text-white">BriefCast</Link> */}
             </div>
@@ -1136,14 +1136,14 @@ export default function Home() {
             </div>
           </div>
         </header>
-        <main className="w-full px-0 pt-4 pb-12 relative z-10">
+        <main className="container max-w-6xl mx-auto px-4 pt-4 pb-12 relative z-10">
         {/* {!isTauri &&
           <h1 className="text-4xl font-bold mb-12 text-center bg-gradient-to-r from-amber-500 to-amber-600 text-transparent bg-clip-text">
             BriefCast
           </h1>} */}
           
           <div 
-            className="w-full backdrop-blur-xl bg-gradient-to-br from-black/10 to-black/30 rounded-none p-4 border border-white/20 shadow-lg"
+            className="backdrop-blur-xl bg-gradient-to-br from-black/10 to-black/30 rounded-2xl p-8 mx-auto border border-white/20 shadow-lg"
             style={{
               boxShadow: `0 20px 50px rgba(0,0,0,0.3), 
                           0 -5px 20px rgba(${colors.primary.match(/\d+/g)?.[0] || 0}, 
@@ -1152,14 +1152,14 @@ export default function Home() {
               backdropFilter: "blur(20px)",
             }}
           >
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 relative">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 relative">
               {/* Player View */}
               {(mobileView === 'player' || window.innerWidth >= 768) && (
                 <div ref={playerContainerRef} className="mb-10 md:mb-0 relative pb-16 md:pb-0">
                   <div className="flex-grow">
                     <div className="flex flex-col gap-6 mb-6">
                       {/* Cover image */}
-                      <div className="relative group w-full aspect-square overflow-hidden rounded-xl shadow-xl">
+                      <div className="relative group w-full max-w-md mx-auto aspect-square overflow-hidden rounded-xl shadow-xl">
                         <Image
                           src={getCoverImageUrl(displayImage)}
                           alt={`${displayTitle} Cover`}

@@ -166,12 +166,12 @@ function cropMenuIconToLogo(image: Electron.NativeImage): Electron.NativeImage {
 function createTray(): void {
   const menuIconPath = resolveMenuIconPath();
   let trayIcon: Electron.NativeImage;
+  const TRAY_ICON_SIZE = 22;
 
   // Use the dedicated menu-bar icon asset.
   if (menuIconPath) {
     const sourceIcon = nativeImage.createFromPath(menuIconPath);
     const croppedIcon = cropMenuIconToLogo(sourceIcon);
-    const TRAY_ICON_SIZE = 22;
     trayIcon = nativeImage.createEmpty();
     for (const scaleFactor of [1, 2]) {
       const px = TRAY_ICON_SIZE * scaleFactor;
@@ -193,8 +193,12 @@ function createTray(): void {
     tray.setIgnoreDoubleClickEvents(true);
   }
 
-  // Clicking the tray icon opens the menu only; it does not open the app window.
+  // Clicking the tray icon opens the tray menu only; the window opens from
+  // the explicit "Open BriefCast" menu item.
   tray.on("click", () => {
+    tray?.popUpContextMenu();
+  });
+  tray.on("right-click", () => {
     tray?.popUpContextMenu();
   });
 
