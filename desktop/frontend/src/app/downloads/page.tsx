@@ -365,7 +365,7 @@ export default function DownloadsPage() {
   return (
     <div className={`min-h-screen bg-gradient-to-br from-indigo-900/90 to-purple-900/90 text-white ${tauri ? 'mt-8' : ''}`}>
       <header className="bg-white/10 backdrop-blur-md shadow-lg">
-        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
+        <div className="w-full px-2 sm:px-4 py-4 flex justify-between items-center">
           <div className="flex items-center gap-2">
             {/* <Link href="/" className="text-2xl font-bold text-white">BriefCast</Link> */}
           </div>
@@ -379,10 +379,10 @@ export default function DownloadsPage() {
         </div>
       </header>
       
-      <main className="container mx-auto px-4 py-8">
+      <main className="w-full px-2 sm:px-4 lg:px-6 py-8">
         {/* Search Bar */}
         <div className="mb-8">
-          <div className="relative max-w-2xl mx-auto">
+          <div className="relative w-full">
             <input
               type="text"
               placeholder="Search your downloads..."

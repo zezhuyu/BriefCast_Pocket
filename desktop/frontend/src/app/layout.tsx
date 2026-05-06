@@ -3,7 +3,6 @@ import { Suspense, useEffect, useState } from 'react';
 import { PlayerProvider } from '@/context/PlayerContext';
 import { backendUrl } from '@/utils/backendUrl';
 import './globals.css';
-import { Inter } from 'next/font/google';
 
 // Electron passes --localstorage-file to its Node.js runtime. When that flag
 // has no valid path (e.g. during Next.js SSR), it installs a broken
@@ -15,8 +14,6 @@ if (typeof globalThis !== 'undefined') {
     try { delete (globalThis as any).localStorage; } catch (_) {}
   }
 }
-
-const inter = Inter({ subsets: ['latin'] });
 
 function ProviderStatusBanner() {
   const [warning, setWarning] = useState<string | null>(null);
@@ -50,7 +47,7 @@ export default function RootLayout({
 }) {
   return (
     <PlayerProvider>
-      <html lang="en" className="h-full w-full rounded-2xl">
+      <html lang="en" className="h-full w-full">
         <head>
           <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
           <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -60,10 +57,10 @@ export default function RootLayout({
           <meta httpEquiv="Pragma" content="no-cache" />
           <meta httpEquiv="Expires" content="0" />
         </head>
-        <body className="h-full w-full bg-white">
+        <body className="h-full w-full bg-white overflow-hidden">
           <ProviderStatusBanner />
           <div className="electron-drag-region" aria-hidden="true" />
-          <div className="h-full w-full bg-white shadow-xl flex flex-col rounded-2xl">
+          <div className="h-full w-full bg-white flex flex-col">
             <div className="flex-1 overflow-y-auto">
               <Suspense fallback={<div>Loading...</div>}>
                 {children}

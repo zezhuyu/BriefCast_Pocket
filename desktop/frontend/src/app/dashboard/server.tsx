@@ -245,7 +245,7 @@ export default function ServerConfigPage({ isTauri }: { isTauri: boolean }) {
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
-    <div className="container mx-auto px-3 py-4">
+    <div className="w-full px-2 sm:px-4 py-4">
       {/* Header */}
       <div className="text-center mb-4">
         <h1 className="text-2xl font-bold text-white mb-1">Server Configuration</h1>
@@ -427,7 +427,7 @@ export default function ServerConfigPage({ isTauri }: { isTauri: boolean }) {
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-amber-400" />
             </div>
           ) : (
-            <div className="space-y-4 max-w-2xl mx-auto">
+            <div className="space-y-4 w-full">
 
               {/* AI Provider */}
               <div className={sectionCls}>

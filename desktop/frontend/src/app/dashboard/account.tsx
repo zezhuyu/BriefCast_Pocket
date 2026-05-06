@@ -137,7 +137,7 @@ export default function AccountPage( {username, setUsername, isTauri}: {username
   }
 
   return (
-    <div className="container mx-auto px-3 py-4">
+    <div className="w-full px-2 sm:px-4 py-4">
         {/* Header */}
         <div className="text-center mb-4">
           <h1 className="text-2xl font-bold text-white mb-1">My Account</h1>
@@ -169,7 +169,7 @@ export default function AccountPage( {username, setUsername, isTauri}: {username
         </div>
 
         {/* Content */}
-        <div className="max-w-4xl mx-auto">
+        <div className="w-full">
           {activeTab === 'profile' && (
             <div className="bg-white/10 backdrop-blur-md rounded-lg p-4 shadow-xl">
               <h2 className="text-lg font-bold text-white mb-4 flex items-center">

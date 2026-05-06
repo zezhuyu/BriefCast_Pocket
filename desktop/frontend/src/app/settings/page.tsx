@@ -158,7 +158,7 @@ export default function SettingsPage() {
   return (
      <div className={`min-h-screen bg-gradient-to-br from-indigo-900/90 to-purple-900/90 text-white`}>
       <header className="bg-white/10 backdrop-blur-md shadow-lg">
-        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
+        <div className="w-full px-2 sm:px-4 py-4 flex justify-between items-center">
           <div className="flex items-center gap-2">
             {/* <Link href="/" className="text-2xl font-bold text-white">BriefCast</Link> */}
           </div>
@@ -173,7 +173,7 @@ export default function SettingsPage() {
         </div>
       </header>
 
-      <main className="container max-w-2xl mx-auto px-4 py-8 space-y-5">
+      <main className="w-full px-2 sm:px-4 lg:px-6 py-8 space-y-5">
         <div>
           <h1 className="text-2xl font-bold">Settings</h1>
           <p className="text-white/60 text-sm mt-1">Configure providers, TTS, sources and preferences</p>

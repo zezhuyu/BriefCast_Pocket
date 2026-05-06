@@ -100,6 +100,58 @@ function resolveMenuIconPath(): string | undefined {
   return candidates.find((p) => fs.existsSync(p));
 }
 
+function cropMenuIconToLogo(image: Electron.NativeImage): Electron.NativeImage {
+  const { width, height } = image.getSize();
+  const bitmap = Buffer.from(image.getBitmap());
+  const alphaThreshold = 10;
+
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const idx = (y * width + x) * 4;
+      const alpha = bitmap[idx + 3];
+      if (alpha >= alphaThreshold) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  if (maxX < minX || maxY < minY) {
+    return image;
+  }
+
+  // Keep a healthy margin around the visible logo so the tray icon is not
+  // rendered too large. Center the crop on the logo itself rather than using
+  // the source image edges.
+  const cropMargin = 140;
+  const cropSide = Math.min(
+    width,
+    height,
+    Math.max(maxX - minX + 1, maxY - minY + 1) + cropMargin
+  );
+  const contentCenterX = (minX + maxX) / 2;
+  const contentCenterY = (minY + maxY) / 2;
+
+  let cropX = Math.round(contentCenterX - cropSide / 2);
+  let cropY = Math.round(contentCenterY - cropSide / 2);
+  cropX = Math.max(0, Math.min(width - cropSide, cropX));
+  cropY = Math.max(0, Math.min(height - cropSide, cropY));
+
+  return image.crop({
+    x: cropX,
+    y: cropY,
+    width: cropSide,
+    height: cropSide,
+  });
+}
+
 function createTray(): void {
   const menuIconPath = resolveMenuIconPath();
   let trayIcon: Electron.NativeImage;
@@ -107,7 +159,19 @@ function createTray(): void {
   // Use the dedicated menu-bar icon asset.
   if (menuIconPath) {
     const sourceIcon = nativeImage.createFromPath(menuIconPath);
-    trayIcon = sourceIcon.resize({ width: 36, height: 36 });
+    const croppedIcon = cropMenuIconToLogo(sourceIcon);
+    const TRAY_ICON_SIZE = 24;
+    trayIcon = nativeImage.createEmpty();
+    for (const scaleFactor of [1, 2]) {
+      const px = TRAY_ICON_SIZE * scaleFactor;
+      const resized = croppedIcon.resize({ width: px, height: px, quality: "best" });
+      trayIcon.addRepresentation({
+        scaleFactor,
+        width: px,
+        height: px,
+        buffer: resized.toPNG(),
+      });
+    }
   } else {
     trayIcon = nativeImage.createEmpty();
   }
