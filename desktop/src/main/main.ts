@@ -521,13 +521,8 @@ app
     // Start with dock hidden; it will reappear via the window "show" event
     if (process.platform === "darwin") app.dock.hide();
 
-    const enableApiBridge = process.env.BRIEFCAST_ENABLE_API_BRIDGE === "1";
-    if (enableApiBridge) {
-      apiBridge = new ApiBridgeServer(service);
-      apiBridge.start();
-    } else {
-      console.log("[embedded-api-bridge] disabled (set BRIEFCAST_ENABLE_API_BRIDGE=1 to enable)");
-    }
+    apiBridge = new ApiBridgeServer(service);
+    apiBridge.start();
 
     registerIpcHandlers();
     createTray();

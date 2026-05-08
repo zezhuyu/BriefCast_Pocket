@@ -6,7 +6,7 @@
   "main": "dist-electron/main.cjs",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"tsup src/main/main.ts src/main/preload.ts --format cjs --external electron --out-dir dist-electron --watch\" \"npm --prefix ./frontend run dev\" \"wait-on dist-electron/main.cjs dist-electron/preload.cjs http-get://127.0.0.1:3000 && cross-env FRONTEND_DEV_SERVER_URL=http://127.0.0.1:3000 BRIEFCAST_ENABLE_API_BRIDGE=1 electronmon dist-electron/main.cjs\"",
+    "dev": "concurrently -k \"tsup src/main/main.ts src/main/preload.ts --format cjs --external electron --out-dir dist-electron --watch\" \"npm --prefix ./frontend run dev\" \"wait-on dist-electron/main.cjs dist-electron/preload.cjs http-get://127.0.0.1:3000 && cross-env FRONTEND_DEV_SERVER_URL=http://127.0.0.1:3000 electronmon dist-electron/main.cjs\"",
     "build": "tsup src/main/main.ts src/main/preload.ts --format cjs --external electron --out-dir dist-electron && cross-env EXPORT_MODE=true npm --prefix ./frontend run build",
     "dist": "npm run build && electron-builder",
     "dist:mac": "npm run build && electron-builder --mac",
