@@ -376,43 +376,53 @@ function scheduleNewsSyncEvery6Hours(svc: BriefcastAppService): void {
 }
 
 function scheduleDailyGeneration(svc: BriefcastAppService): void {
-  function msUntilHour(hour: number, minute = 0): number {
-    const now = new Date();
-    const target = new Date(now);
-    target.setHours(hour, minute, 0, 0);
-    if (target <= now) target.setDate(target.getDate() + 1);
-    return target.getTime() - now.getTime();
-  }
+  let lastBriefingDate = "";
+  let lastPrefRefreshDate = "";
+  let briefingInFlight = false;
+  let prefRefreshInFlight = false;
 
-  // 8:00am — generate the daily briefing
-  function scheduleBriefing(): void {
-    setTimeout(async () => {
-      console.log("[scheduler] 8:00am — generating daily briefing");
+  async function tick(): Promise<void> {
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    const hour = now.getHours();
+    const minute = now.getMinutes();
+
+    // 8:00am or later — generate daily briefing once per day
+    if (hour >= 8 && lastBriefingDate !== today && !briefingInFlight) {
+      lastBriefingDate = today; // mark immediately to prevent double-trigger
+      briefingInFlight = true;
+      console.log("[scheduler] 8:00am+ — generating daily briefing for", today);
       try {
         await svc.forceDailyPodcast();
         await svc.cleanupOldPodcastFiles();
       } catch (err) {
         console.error("[scheduler] daily briefing failed:", err);
+        lastBriefingDate = ""; // reset so it retries next tick
+      } finally {
+        briefingInFlight = false;
       }
-      scheduleBriefing();
-    }, msUntilHour(8, 0));
-  }
+    }
 
-  // 8:30am — refresh topic preferences from listening behavior
-  function schedulePreferenceRefresh(): void {
-    setTimeout(async () => {
-      console.log("[scheduler] 8:30am — refreshing topic preferences from behavior");
+    // 8:30am or later — refresh preferences once per day (after briefing)
+    if ((hour > 8 || (hour === 8 && minute >= 30)) && lastPrefRefreshDate !== today && !prefRefreshInFlight) {
+      lastPrefRefreshDate = today;
+      prefRefreshInFlight = true;
+      console.log("[scheduler] 8:30am+ — refreshing topic preferences from behavior");
       try {
         await svc.refreshTopicsFromBehavior();
       } catch (err) {
         console.error("[scheduler] preference refresh failed:", err);
+        lastPrefRefreshDate = ""; // reset so it retries next tick
+      } finally {
+        prefRefreshInFlight = false;
       }
-      schedulePreferenceRefresh();
-    }, msUntilHour(8, 30));
+    }
   }
 
-  scheduleBriefing();
-  schedulePreferenceRefresh();
+  // Poll every minute — resilient to system sleep unlike a single long setTimeout
+  setInterval(tick, 60_000);
+  // Run once immediately in case the app started after 8am with no podcast yet
+  tick();
 }
 
 function registerIpcHandlers(): void {

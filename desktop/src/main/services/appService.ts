@@ -2140,6 +2140,9 @@ export class BriefcastAppService {
   private async _runDailyPodcastGeneration(today: string): Promise<Podcast | null> {
     const cacheKey = `daily-${today}`;
 
+    // Reload settings from disk so we always use the user's latest preferences
+    this.settings = this.configStore.load();
+
     await this.ensureFreshNews(0);
     const personalizedCount = Math.max(1, Math.min(20, Math.floor(this.settings.preferences.dailyBriefingCount || 5)));
     const hotNewsCount = GLOBAL_HOT_NEWS_COUNT;
